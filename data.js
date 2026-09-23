@@ -220,6 +220,13 @@
     async deleteUser(id) {
       await invokeAdminUsers({ action: 'delete', id });
       await refresh();
+    },
+
+    /** Anula los intentos de un estudiante en un examen (se conservan en la BD). Devuelve cuántos. */
+    async resetAttempts(userId, examId) {
+      const count = await rpc('admin_reset_attempts', { p_user_id: userId, p_exam_id: examId });
+      await refresh();
+      return count;
     }
   };
 

@@ -22,6 +22,7 @@ py -m http.server 5510
 - Resultados con correctas, incorrectas, porcentaje, fecha/hora y número de intento.
 - Certificado con código único al obtener 90% o más (uno por usuario y examen), imprimible o guardable como PDF.
 - Panel administrativo: estadísticas, CRUD de exámenes (publicar/desactivar) y CRUD de usuarios.
+- Solo el administrador puede reiniciar los intentos de un estudiante en un examen (Usuarios → Reiniciar intentos). Los intentos anteriores no se borran: quedan anulados en la base de datos (`voided_at`, `voided_by`) como historial, y los certificados ya emitidos se conservan.
 
 ## Arquitectura y seguridad
 

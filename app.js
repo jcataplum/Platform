@@ -1183,6 +1183,7 @@
               <td data-label="Registro">${UI.fmtDate(u.createdAt)}</td>
               <td data-label="Acciones"><div class="btn-row">
                 <button class="btn btn-outline btn-sm" data-action="edit" data-id="${u.id}">Editar</button>
+                ${atts.some(a => a.userId === u.id) ? `<button class="btn btn-outline btn-sm" data-action="resetAttempts" data-id="${u.id}">Reiniciar intentos</button>` : ''}
                 <button class="btn btn-danger btn-sm" data-action="delete" data-id="${u.id}" ${u.id === me.id ? 'disabled title="No puedes eliminar tu propia cuenta"' : ''}>Eliminar</button>
               </div></td></tr>`).join('')}
           </tbody>
@@ -1245,6 +1246,49 @@
         if (v === 'save') { UI.toast(u ? 'Usuario actualizado' : 'Usuario creado', 'success'); render(); }
       });
     }
+
+    /** Reinicia (anula) los intentos de un usuario en un examen elegido. */
+    actions.resetAttempts = el => {
+      const u = users.find(x => x.id === el.dataset.id);
+      if (!u) return;
+      const byExam = [];
+      atts.filter(a => a.userId === u.id).forEach(a => {
+        let g = byExam.find(x => x.examId === a.examId);
+        if (!g) byExam.push(g = { examId: a.examId, title: a.examTitle, count: 0, inProgress: false });
+        g.count++;
+        if (a.status === 'in_progress') g.inProgress = true;
+      });
+      if (!byExam.length) return;
+      const hasCert = examId => certs.some(c => c.userId === u.id && c.examId === examId);
+
+      UI.modal({
+        title: 'Reiniciar intentos',
+        body: `
+          <div class="form">
+            <p style="margin:0">Estudiante: <strong>${UI.esc(u.name)}</strong></p>
+            <div class="field"><label for="rExam">Examen</label>
+              <select class="input" id="rExam" name="rexam">
+                ${byExam.map(g => `<option value="${UI.esc(g.examId)}">${UI.esc(g.title)} — ${g.count}/${MAX_ATTEMPTS} intentos${g.inProgress ? ' (uno en curso)' : ''}${hasCert(g.examId) ? ' · certificado' : ''}</option>`).join('')}
+              </select></div>
+            <p class="small muted" style="margin:0">El estudiante volverá a tener ${MAX_ATTEMPTS} intentos disponibles. Los intentos anteriores se conservan en el historial de la base de datos, pero dejarán de mostrarse; un intento en curso se cancela. Los certificados ya emitidos se mantienen.</p>
+            <p class="form-error" id="rErr" role="alert"></p>
+          </div>`,
+        buttons: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Reiniciar intentos', value: 'reset', cls: 'btn-danger' }],
+        async onSubmit(val, form) {
+          const err = form.querySelector('#rErr');
+          err.textContent = '';
+          try {
+            await Api.resetAttempts(u.id, form.rexam.value);
+          } catch (ex) {
+            err.textContent = ex.message;
+            return false;
+          }
+          return true;
+        }
+      }).then(v => {
+        if (v === 'reset') { UI.toast('Intentos reiniciados', 'success'); render(); }
+      });
+    };
 
     actions.new = () => openForm(null);
     actions.edit = el => openForm(Store.users().find(x => x.id === el.dataset.id));
