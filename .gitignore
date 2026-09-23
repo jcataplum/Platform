@@ -1,0 +1,9 @@
+# Configuración local de Claude Code (permisos personales)
+.claude/settings.local.json
+
+# Sistema operativo / editores
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.idea/
