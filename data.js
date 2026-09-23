@@ -1,244 +1,245 @@
 /* =========================================================
-   data.js — Capa de datos (localStorage) + datos de demostración
-   Claves: users, exams, attempts, certificates, currentUser
+   data.js — Capa de datos sobre Supabase
+   Requiere supabase-js v2 cargado antes (window.supabase).
+
+   · Lecturas síncronas: Store.users/exams/attempts/certificates()
+     devuelven copias de una caché en memoria que se carga con
+     init() / refresh() desde la RPC `get_state`.
+   · Escrituras asíncronas: Auth.* y Api.* llaman a las RPC (reglas de
+     negocio en el servidor) y actualizan la caché.
+   · Gestión de usuarios: Edge Function `admin-users`.
    ========================================================= */
 (function (global) {
   'use strict';
 
-  const KEYS = {
-    users: 'users',
-    exams: 'exams',
-    attempts: 'attempts',
-    certificates: 'certificates',
-    currentUser: 'currentUser',
-    seeded: 'hdi_seeded_v1'
-  };
+  // Valores públicos del proyecto (la publishable key está pensada para el navegador).
+  const SUPABASE_URL = 'https://ppxtrcpdsspdzxydcfli.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_IAe8rHSC2nhdKHw1l29stA_flkvc8Cv';
 
+  // Solo para mostrar en la interfaz: la regla real se aplica en la base de datos.
   const MAX_ATTEMPTS = 3;
   const PASS_PERCENT = 90;
 
+  const client = global.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true }
+  });
+
   /* ---------- Utilidades ---------- */
+  // Ids de preguntas y opciones en el editor de exámenes
   function uid(prefix) {
     const rnd = new Uint32Array(2);
-    (global.crypto || global.msCrypto).getRandomValues(rnd);
+    global.crypto.getRandomValues(rnd);
     return (prefix || 'id') + '_' + Date.now().toString(36) + rnd[0].toString(36) + rnd[1].toString(36).slice(0, 4);
   }
 
-  function certCode() {
-    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    const rnd = new Uint32Array(8);
-    global.crypto.getRandomValues(rnd);
-    let s = '';
-    for (let i = 0; i < 8; i++) s += alphabet[rnd[i] % alphabet.length];
-    return 'HDI-' + s.slice(0, 4) + '-' + s.slice(4);
+  function clone(v) {
+    return v == null ? v : JSON.parse(JSON.stringify(v));
   }
 
-  /* Hash sincrónico (cyrb53) con sal. Solo para demostración: no es seguridad real. */
-  function hash(str) {
-    str = 'hdi::' + String(str);
-    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
-    for (let i = 0; i < str.length; i++) {
-      const ch = str.charCodeAt(i);
-      h1 = Math.imul(h1 ^ ch, 2654435761);
-      h2 = Math.imul(h2 ^ ch, 1597334677);
+  async function rpc(fn, args) {
+    const { data, error } = await client.rpc(fn, args);
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  async function invokeAdminUsers(body) {
+    const { data, error } = await client.functions.invoke('admin-users', { body });
+    if (error) {
+      let message = error.message;
+      try { message = (await error.context.json()).error || message; } catch (e) { /* respuesta sin JSON */ }
+      throw new Error(message);
     }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+    return data;
   }
 
-  /* ---------- Store ---------- */
+  /* ---------- Caché ---------- */
+  function emptyCache() {
+    return { me: null, users: [], exams: [], attempts: [], certificates: [] };
+  }
+  let cache = emptyCache();
+
+  function put(collection, item) {
+    const list = cache[collection];
+    const idx = list.findIndex(x => x.id === item.id);
+    if (idx === -1) list.push(item); else list[idx] = item;
+  }
+
+  /** Recarga todo lo visible para la sesión actual. Devuelve el usuario o null. */
+  async function refresh() {
+    // Las RPC solo aceptan usuarios autenticados; sin sesión no hay nada que cargar.
+    const { data: { session } } = await client.auth.getSession();
+    if (!session) {
+      cache = emptyCache();
+      return null;
+    }
+    const state = await rpc('get_state');
+    cache = state ? {
+      me: state.me,
+      users: state.users || [],
+      exams: state.exams || [],
+      attempts: state.attempts || [],
+      certificates: state.certificates || []
+    } : emptyCache();
+    return clone(cache.me);
+  }
+
   const Store = {
-    get(key, fallback) {
-      try {
-        const raw = localStorage.getItem(key);
-        return raw === null ? fallback : JSON.parse(raw);
-      } catch (e) {
-        return fallback;
-      }
-    },
-    set(key, value) {
-      localStorage.setItem(key, JSON.stringify(value));
-    },
-    remove(key) {
-      localStorage.removeItem(key);
-    },
-    users() { return Store.get(KEYS.users, []); },
-    exams() { return Store.get(KEYS.exams, []); },
-    attempts() { return Store.get(KEYS.attempts, []); },
-    certificates() { return Store.get(KEYS.certificates, []); },
-    saveUsers(v) { Store.set(KEYS.users, v); },
-    saveExams(v) { Store.set(KEYS.exams, v); },
-    saveAttempts(v) { Store.set(KEYS.attempts, v); },
-    saveCertificates(v) { Store.set(KEYS.certificates, v); }
+    users() { return clone(cache.users); },
+    exams() { return clone(cache.exams); },
+    attempts() { return clone(cache.attempts); },
+    certificates() { return clone(cache.certificates); }
   };
 
-  /* ---------- Datos demo ---------- */
-  function q(text, type, options, correctIdx) {
-    const opts = options.map(t => ({ id: uid('o'), text: t }));
-    return {
-      id: uid('q'),
-      text,
-      type,
-      options: opts,
-      correct: correctIdx.map(i => opts[i].id)
-    };
+  /* ---------- Sesión ---------- */
+  const listeners = new Set();
+  let localAuthOp = false; // login/registro/salida iniciados en esta pestaña
+
+  async function ownAuthOp(task) {
+    localAuthOp = true;
+    try { return await task(); } finally { localAuthOp = false; }
   }
 
-  function buildDemoExams() {
-    const now = new Date().toISOString();
-    return [
-      {
-        id: 'exam_fundamentos',
-        title: 'Fundamentos de Seguros',
-        description: 'Conceptos esenciales del sector asegurador: riesgo, póliza, prima, deducible y coberturas.',
-        published: true,
-        createdAt: now,
-        updatedAt: now,
-        questions: [
-          q('¿Qué es la prima en un contrato de seguro?', 'single',
-            ['El valor que paga el asegurado por la cobertura', 'La indemnización que paga la aseguradora', 'El documento que formaliza el contrato', 'El monto máximo asegurado'], [0]),
-          q('¿Qué documento formaliza el contrato de seguro?', 'single',
-            ['La factura', 'La póliza', 'El siniestro', 'El endoso'], [1]),
-          q('Selecciona los elementos esenciales de un contrato de seguro.', 'multiple',
-            ['Interés asegurable', 'Riesgo asegurable', 'Prima', 'Descuento comercial'], [0, 1, 2]),
-          q('¿Qué es un siniestro?', 'single',
-            ['La renovación de la póliza', 'La materialización del riesgo cubierto', 'Un tipo de reaseguro', 'La cancelación del contrato'], [1]),
-          q('El deducible es:', 'single',
-            ['La parte de la pérdida que asume el asegurado', 'Un beneficio adicional', 'El impuesto del seguro', 'La comisión del intermediario'], [0]),
-          q('¿Cuáles de los siguientes son seguros de daños?', 'multiple',
-            ['Seguro de automóviles', 'Seguro de hogar', 'Seguro de vida', 'Seguro de incendio'], [0, 1, 3]),
-          q('¿Quién es el tomador del seguro?', 'single',
-            ['Quien recibe la indemnización siempre', 'Quien contrata el seguro y paga la prima', 'El perito de la aseguradora', 'El reasegurador'], [1]),
-          q('El reaseguro es:', 'single',
-            ['Un seguro para las aseguradoras', 'Una renovación automática', 'Un seguro obligatorio de tránsito', 'Un descuento por buen historial'], [0])
-        ]
-      },
-      {
-        id: 'exam_servicio',
-        title: 'Atención y Servicio al Cliente',
-        description: 'Buenas prácticas de servicio, comunicación efectiva y gestión de reclamaciones.',
-        published: true,
-        createdAt: now,
-        updatedAt: now,
-        questions: [
-          q('¿Cuál es el primer paso ante la reclamación de un cliente?', 'single',
-            ['Escuchar activamente', 'Transferir la llamada', 'Ofrecer un descuento', 'Cerrar el caso'], [0]),
-          q('Selecciona prácticas de comunicación efectiva.', 'multiple',
-            ['Usar lenguaje claro', 'Confirmar la comprensión', 'Interrumpir para ahorrar tiempo', 'Mostrar empatía'], [0, 1, 3]),
-          q('Un cliente satisfecho suele:', 'single',
-            ['Cancelar su póliza', 'Recomendar la compañía', 'Presentar más quejas', 'Ignorar las comunicaciones'], [1]),
-          q('¿Qué indicador mide la probabilidad de que un cliente recomiende la empresa?', 'single',
-            ['ROI', 'NPS', 'KPI de ventas', 'EBITDA'], [1]),
-          q('Selecciona canales de atención digitales.', 'multiple',
-            ['Chat en línea', 'Aplicación móvil', 'Correo electrónico', 'Oficina física'], [0, 1, 2]),
-          q('Ante un error de la compañía, lo correcto es:', 'single',
-            ['Negarlo', 'Reconocerlo y ofrecer solución', 'Culpar al cliente', 'Esperar a que el cliente lo olvide'], [1])
-        ]
-      },
-      {
-        id: 'exam_fraude',
-        title: 'Prevención de Fraude',
-        description: 'Identificación de señales de alerta y protocolos ante posibles fraudes en seguros.',
-        published: false,
-        createdAt: now,
-        updatedAt: now,
-        questions: [
-          q('¿Cuál es una señal de alerta de fraude?', 'single',
-            ['Reclamación presentada con documentos completos', 'Siniestro reportado poco después de contratar la póliza', 'Cliente con años de antigüedad', 'Pago puntual de primas'], [1]),
-          q('Selecciona acciones correctas ante una sospecha de fraude.', 'multiple',
-            ['Documentar la evidencia', 'Escalar al área encargada', 'Confrontar públicamente al cliente', 'Seguir el protocolo interno'], [0, 1, 3]),
-          q('El fraude en seguros afecta principalmente a:', 'single',
-            ['Solo a la aseguradora', 'A todos los asegurados vía mayores primas', 'A nadie', 'Solo al Estado'], [1])
-        ]
+  /** Carga la sesión guardada y los datos. Llamar una vez antes del primer render. */
+  async function init() {
+    await refresh();
+    // Solo notifica cambios externos (otra pestaña, sesión expirada).
+    // No se debe esperar a otras llamadas de supabase dentro de este callback.
+    client.auth.onAuthStateChange((event, session) => {
+      if (localAuthOp) return;
+      if (event === 'SIGNED_OUT' && cache.me) {
+        cache = emptyCache();
+        listeners.forEach(cb => cb(event));
+      } else if (event === 'SIGNED_IN' && session && (!cache.me || cache.me.id !== session.user.id)) {
+        setTimeout(() => refresh().then(() => listeners.forEach(cb => cb(event)), () => {}), 0);
       }
-    ];
-  }
-
-  function gradeAnswers(questions, answers) {
-    let correct = 0;
-    questions.forEach(qq => {
-      const sel = (answers[qq.id] || []).slice().sort();
-      const ok = qq.correct.slice().sort();
-      if (sel.length === ok.length && sel.every((v, i) => v === ok[i])) correct++;
     });
-    return correct;
   }
 
-  function seed(force) {
-    if (!force && localStorage.getItem(KEYS.seeded)) return;
+  function onAuthChange(cb) {
+    listeners.add(cb);
+    return () => listeners.delete(cb);
+  }
 
-    const now = Date.now();
-    const admin = {
-      id: 'user_admin',
-      name: 'Administrador HDI',
-      email: 'admin@hdi.com',
-      passwordHash: hash('admin123'),
-      role: 'admin',
-      createdAt: new Date(now - 86400000 * 30).toISOString()
-    };
-    const student = {
-      id: 'user_estudiante',
-      name: 'Laura Gómez',
-      email: 'estudiante@hdi.com',
-      passwordHash: hash('estudiante123'),
-      role: 'student',
-      createdAt: new Date(now - 86400000 * 10).toISOString()
-    };
-    const exams = buildDemoExams();
-    const service = exams[1];
+  const Auth = {
+    current() { return clone(cache.me); },
 
-    // Intento 1 (reprobado) y 2 (aprobado con certificado) en "Atención y Servicio al Cliente"
-    const qs = service.questions;
-    const a1 = {};
-    qs.forEach((qq, i) => { a1[qq.id] = i < 4 ? qq.correct.slice() : [qq.options[qq.options.length - 1].id]; });
-    const a2 = {};
-    qs.forEach(qq => { a2[qq.id] = qq.correct.slice(); });
+    /** Devuelve el usuario, o null si las credenciales no son válidas. */
+    login(email, password) {
+      return ownAuthOp(async () => {
+        const { error } = await client.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
+        if (error) {
+          if (error.code === 'invalid_credentials' || error.status === 400) return null;
+          throw new Error(error.message);
+        }
+        return refresh();
+      });
+    },
 
-    const mk = (n, answers, daysAgo) => {
-      const correctCount = gradeAnswers(qs, answers);
-      const finished = new Date(now - 86400000 * daysAgo);
-      return {
-        id: uid('att'),
-        userId: student.id,
-        examId: service.id,
-        examTitle: service.title,
-        number: n,
-        startedAt: new Date(finished.getTime() - 600000).toISOString(),
-        finishedAt: finished.toISOString(),
-        questionsSnapshot: JSON.parse(JSON.stringify(qs)),
-        answers,
-        currentIndex: qs.length - 1,
-        correctCount,
-        total: qs.length,
-        percentage: Math.round((correctCount / qs.length) * 100),
-        status: 'finished'
-      };
-    };
-    const att1 = mk(1, a1, 3);
-    const att2 = mk(2, a2, 1);
+    register(name, email, password) {
+      return ownAuthOp(() => signUp(name, email, password));
+    },
 
-    const cert = {
-      id: uid('cert'),
-      code: certCode(),
-      userId: student.id,
-      userName: student.name,
-      examId: service.id,
-      examTitle: service.title,
-      attemptId: att2.id,
-      percentage: att2.percentage,
-      issuedAt: att2.finishedAt
-    };
+    logout() {
+      return ownAuthOp(async () => {
+        cache = emptyCache();
+        await client.auth.signOut();
+      });
+    }
+  };
 
-    Store.saveUsers([admin, student]);
-    Store.saveExams(exams);
-    Store.saveAttempts([att1, att2]);
-    Store.saveCertificates([cert]);
-    localStorage.setItem(KEYS.seeded, '1');
+  async function signUp(name, email, password) {
+    const { data, error } = await client.auth.signUp({
+      email: email.trim().toLowerCase(),
+      password,
+      options: { data: { name: name.trim() } }
+    });
+    if (error) {
+      if (error.code === 'user_already_exists' || /already registered/i.test(error.message)) {
+        throw new Error('Ya existe una cuenta con ese correo.');
+      }
+      throw new Error(error.message);
+    }
+    // Con confirmación de correo activa, Supabase no abre sesión hasta confirmar.
+    if (!data.session) throw new Error('Te enviamos un correo para confirmar tu cuenta. Confírmala y luego inicia sesión.');
+    return refresh();
+  }
+
+  /* ---------- Operaciones ---------- */
+  const Api = {
+    /** Crea un nuevo intento o reanuda el que está en curso. */
+    async startAttempt(examId) {
+      const att = await rpc('start_attempt', { p_exam_id: examId });
+      put('attempts', att);
+      return clone(att);
+    },
+
+    async saveAnswer(attemptId, questionId, optionIds) {
+      const att = await rpc('save_answer', { p_attempt_id: attemptId, p_question_id: questionId, p_option_ids: optionIds });
+      put('attempts', att);
+      return clone(att);
+    },
+
+    async setAttemptIndex(attemptId, index) {
+      const att = await rpc('set_attempt_index', { p_attempt_id: attemptId, p_index: index });
+      put('attempts', att);
+      return clone(att);
+    },
+
+    /** Califica en el servidor. Devuelve { attempt, certificate }. */
+    async finishAttempt(attemptId) {
+      const result = await rpc('finish_attempt', { p_attempt_id: attemptId });
+      // Recarga todo: terminar puede revelar las respuestas de otros intentos del mismo examen.
+      await refresh();
+      return clone(result);
+    },
+
+    async saveExam(exam) {
+      const saved = await rpc('admin_save_exam', { p_exam: exam });
+      put('exams', saved);
+      return clone(saved);
+    },
+
+    async setExamPublished(examId, published) {
+      const saved = await rpc('admin_set_exam_published', { p_exam_id: examId, p_published: published });
+      put('exams', saved);
+      return clone(saved);
+    },
+
+    async deleteExam(examId) {
+      await rpc('admin_delete_exam', { p_exam_id: examId });
+      cache.exams = cache.exams.filter(e => e.id !== examId);
+    },
+
+    /** Crea (sin id) o actualiza (con id) una cuenta. password vacío = no cambiar. */
+    async saveUser({ id, name, email, role, password }) {
+      await invokeAdminUsers({ action: id ? 'update' : 'create', id, name, email, role, password });
+      await refresh();
+    },
+
+    async deleteUser(id) {
+      await invokeAdminUsers({ action: 'delete', id });
+      await refresh();
+    },
+
+    async resetDemo() {
+      await rpc('admin_reset_demo');
+      await refresh();
+    }
+  };
+
+  /* ---------- Calificación local ---------- */
+  // Solo para mostrar el detalle de un intento. Si el servidor ocultó las
+  // respuestas correctas, la pregunta trae `ok` con el resultado ya calculado.
+  function isCorrect(question, selected) {
+    if (!question.correct) return !!question.ok;
+    const s = (selected || []).slice().sort();
+    const c = question.correct.slice().sort();
+    return s.length === c.length && s.every((v, i) => v === c[i]);
   }
 
   global.HDIData = {
-    KEYS, MAX_ATTEMPTS, PASS_PERCENT,
-    Store, uid, certCode, hash, seed, gradeAnswers
+    MAX_ATTEMPTS, PASS_PERCENT,
+    client, init, refresh, onAuthChange,
+    Store, Auth, Api, uid, isCorrect
   };
 })(window);

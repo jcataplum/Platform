@@ -6,7 +6,7 @@
 (function () {
   'use strict';
 
-  const { Store, KEYS, MAX_ATTEMPTS, PASS_PERCENT, uid, certCode, hash, seed, gradeAnswers } = window.HDIData;
+  const { Store, Api, MAX_ATTEMPTS, PASS_PERCENT, uid, isCorrect } = window.HDIData;
 
   const $app = document.getElementById('app');
   const $nav = document.getElementById('mainNav');
@@ -37,8 +37,23 @@
       UI._toastTimer = setTimeout(() => { t.className = 'toast'; }, 2800);
     },
     /**
-     * Abre un modal. buttons: [{label, value, cls}]. onSubmit(value, form) → false mantiene abierto.
-     * Resuelve con el value del botón pulsado (o null si se cierra).
+     * Ejecuta una operación asíncrona bloqueando `btn` mientras dura (evita doble envío).
+     * Los errores se muestran como toast; en ese caso resuelve con undefined.
+     */
+    async run(btn, task) {
+      if (btn) { if (btn.disabled) return; btn.disabled = true; }
+      try {
+        return await task();
+      } catch (ex) {
+        UI.toast(ex.message, 'error');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    },
+    /**
+     * Abre un modal. buttons: [{label, value, cls}]. onSubmit(value, form) → false (o una
+     * promesa que resuelve a false) mantiene abierto. Resuelve con el value del botón pulsado
+     * (o null si se cierra).
      */
     modal({ title, body, buttons, onSubmit }) {
       const dlg = document.getElementById('modal');
@@ -54,6 +69,7 @@
 
       return new Promise(resolve => {
         let done = false;
+        let submitting = false;
         const finish = val => {
           if (done) return;
           done = true;
@@ -64,12 +80,23 @@
           if (dlg.open) dlg.close();
           resolve(val);
         };
-        const onFormSubmit = e => {
+        const onFormSubmit = async e => {
           e.preventDefault();
+          if (submitting) return;
           const def = form.querySelector('#modalFoot button[type=submit]');
           const val = e.submitter ? e.submitter.value : (def ? def.value : 'ok');
           if (val === 'cancel') return finish(null);
-          if (onSubmit && onSubmit(val, form) === false) return;
+          if (onSubmit) {
+            const btns = form.querySelectorAll('#modalFoot button[type=submit]');
+            submitting = true;
+            btns.forEach(b => { b.disabled = true; });
+            let res;
+            try { res = await onSubmit(val, form); } finally {
+              submitting = false;
+              btns.forEach(b => { b.disabled = false; });
+            }
+            if (res === false || done) return;
+          }
           finish(val);
         };
         const onCancel = e => { e.preventDefault(); finish(null); };
@@ -104,50 +131,18 @@
   };
 
   /* =======================================================
-     Auth — sesión con localStorage
+     Auth — sesión con Supabase Auth (ver data.js)
      ======================================================= */
-  const Auth = {
-    current() {
-      const session = Store.get(KEYS.currentUser, null);
-      if (!session) return null;
-      const user = Store.users().find(u => u.id === session.id);
-      if (!user) { Store.remove(KEYS.currentUser); return null; }
-      return user;
-    },
-    login(email, password) {
-      const user = Store.users().find(u => u.email.toLowerCase() === email.trim().toLowerCase());
-      if (!user || user.passwordHash !== hash(password)) return null;
-      Store.set(KEYS.currentUser, { id: user.id, since: new Date().toISOString() });
-      return user;
-    },
-    register(name, email, password) {
-      const users = Store.users();
-      if (users.some(u => u.email.toLowerCase() === email.trim().toLowerCase())) {
-        throw new Error('Ya existe una cuenta con ese correo.');
-      }
-      const user = {
-        id: uid('user'),
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        passwordHash: hash(password),
-        role: 'student',
-        createdAt: new Date().toISOString()
-      };
-      users.push(user);
-      Store.saveUsers(users);
-      Store.set(KEYS.currentUser, { id: user.id, since: new Date().toISOString() });
-      return user;
-    },
-    logout() {
-      Store.remove(KEYS.currentUser);
-    },
+  const Auth = Object.assign({}, window.HDIData.Auth, {
     home(user) {
       return user && user.role === 'admin' ? '#/admin' : '#/panel';
     }
-  };
+  });
 
   /* =======================================================
-     Domain — reglas de negocio (intentos, calificación, certificados)
+     Domain — consultas sobre la caché. Las reglas de negocio
+     (intentos, calificación, certificados) se aplican en la base
+     de datos y se invocan con Api.* (ver data.js).
      ======================================================= */
   const Domain = {
     exam(id) { return Store.exams().find(e => e.id === id) || null; },
@@ -166,100 +161,7 @@
       return Store.certificates().find(c => c.userId === userId && c.examId === examId) || null;
     },
 
-    /** Crea un nuevo intento (o reanuda el que está en curso). */
-    startAttempt(user, examId) {
-      const exam = Domain.exam(examId);
-      if (!exam || !exam.published) throw new Error('El examen no está disponible.');
-      if (!exam.questions.length) throw new Error('El examen no tiene preguntas.');
-      const current = Domain.inProgress(user.id, examId);
-      if (current) return current;
-      const used = Domain.attemptsFor(user.id, examId).length;
-      if (used >= MAX_ATTEMPTS) throw new Error('Has alcanzado el máximo de ' + MAX_ATTEMPTS + ' intentos.');
-
-      const attempt = {
-        id: uid('att'),
-        userId: user.id,
-        examId: exam.id,
-        examTitle: exam.title,
-        number: used + 1,
-        startedAt: new Date().toISOString(),
-        finishedAt: null,
-        questionsSnapshot: JSON.parse(JSON.stringify(exam.questions)),
-        answers: {},
-        currentIndex: 0,
-        correctCount: 0,
-        total: exam.questions.length,
-        percentage: 0,
-        status: 'in_progress'
-      };
-      const all = Store.attempts();
-      all.push(attempt); // nunca se sobrescriben intentos anteriores
-      Store.saveAttempts(all);
-      return attempt;
-    },
-
-    /** Aplica un cambio a un intento y lo persiste de inmediato. */
-    updateAttempt(id, mutator) {
-      const all = Store.attempts();
-      const att = all.find(a => a.id === id);
-      if (!att) return null;
-      mutator(att);
-      Store.saveAttempts(all);
-      return att;
-    },
-
-    saveAnswer(attemptId, questionId, optionIds) {
-      return Domain.updateAttempt(attemptId, att => {
-        if (att.status !== 'in_progress') throw new Error('El intento ya fue finalizado.');
-        if (att.answers[questionId]) throw new Error('Esta respuesta ya fue confirmada y no puede modificarse.');
-        att.answers[questionId] = optionIds.slice();
-      });
-    },
-
-    finishAttempt(attemptId) {
-      let cert = null;
-      const att = Domain.updateAttempt(attemptId, a => {
-        if (a.status !== 'in_progress') return;
-        a.correctCount = gradeAnswers(a.questionsSnapshot, a.answers);
-        a.total = a.questionsSnapshot.length;
-        a.percentage = a.total ? Math.round((a.correctCount / a.total) * 100) : 0;
-        a.finishedAt = new Date().toISOString();
-        a.status = 'finished';
-      });
-      if (att && att.percentage >= PASS_PERCENT) cert = Domain.issueCertificate(att);
-      return { attempt: att, certificate: cert };
-    },
-
-    /** Emite certificado si no existe ya uno para el mismo usuario y examen. */
-    issueCertificate(att) {
-      const existing = Domain.certFor(att.userId, att.examId);
-      if (existing) return existing;
-      const user = Store.users().find(u => u.id === att.userId);
-      const certs = Store.certificates();
-      const codes = new Set(certs.map(c => c.code));
-      let code;
-      do { code = certCode(); } while (codes.has(code));
-      const cert = {
-        id: uid('cert'),
-        code,
-        userId: att.userId,
-        userName: user ? user.name : '',
-        examId: att.examId,
-        examTitle: att.examTitle,
-        attemptId: att.id,
-        percentage: att.percentage,
-        issuedAt: att.finishedAt
-      };
-      certs.push(cert);
-      Store.saveCertificates(certs);
-      return cert;
-    },
-
-    isCorrect(question, selected) {
-      const s = (selected || []).slice().sort();
-      const c = question.correct.slice().sort();
-      return s.length === c.length && s.every((v, i) => v === c[i]);
-    }
+    isCorrect
   };
 
   /* =======================================================
@@ -342,8 +244,9 @@
     $nav.classList.remove('open');
     document.getElementById('navToggle').setAttribute('aria-expanded', 'false');
     const lb = document.getElementById('logoutBtn');
-    if (lb) lb.addEventListener('click', () => {
-      Auth.logout();
+    if (lb) lb.addEventListener('click', async () => {
+      lb.disabled = true;
+      try { await Auth.logout(); } catch (ex) { /* la sesión local ya se limpió */ }
       UI.toast('Sesión cerrada');
       go('#/login');
     });
@@ -409,15 +312,25 @@
       document.getElementById('lPass').value = el.dataset.pass;
     };
 
-    document.getElementById('loginForm').addEventListener('submit', e => {
+    document.getElementById('loginForm').addEventListener('submit', async e => {
       e.preventDefault();
       const f = e.target;
       const err = document.getElementById('lErr');
+      const btn = f.querySelector('button[type=submit]');
+      if (btn.disabled) return;
       if (!f.email.value.trim() || !f.password.value) { err.textContent = 'Completa correo y contraseña.'; return; }
-      const user = Auth.login(f.email.value, f.password.value);
-      if (!user) { err.textContent = 'Correo o contraseña incorrectos.'; return; }
-      UI.toast('¡Bienvenido(a), ' + user.name.split(' ')[0] + '!', 'success');
-      go(Auth.home(user));
+      err.textContent = '';
+      btn.disabled = true;
+      try {
+        const user = await Auth.login(f.email.value, f.password.value);
+        if (!user) { err.textContent = 'Correo o contraseña incorrectos.'; return; }
+        UI.toast('¡Bienvenido(a), ' + user.name.split(' ')[0] + '!', 'success');
+        go(Auth.home(user));
+      } catch (ex) {
+        err.textContent = ex.message;
+      } finally {
+        btn.disabled = false;
+      }
     });
   }
 
@@ -454,21 +367,27 @@
         </section>
       </div>`;
 
-    document.getElementById('regForm').addEventListener('submit', e => {
+    document.getElementById('regForm').addEventListener('submit', async e => {
       e.preventDefault();
       const f = e.target;
       const err = document.getElementById('rErr');
+      const btn = f.querySelector('button[type=submit]');
+      if (btn.disabled) return;
       const name = f.name.value.trim(), email = f.email.value.trim();
       if (name.length < 3) { err.textContent = 'Ingresa tu nombre completo.'; return; }
       if (!UI.emailOk(email)) { err.textContent = 'Ingresa un correo válido.'; return; }
       if (f.password.value.length < 6) { err.textContent = 'La contraseña debe tener al menos 6 caracteres.'; return; }
       if (f.password.value !== f.password2.value) { err.textContent = 'Las contraseñas no coinciden.'; return; }
+      err.textContent = '';
+      btn.disabled = true;
       try {
-        const user = Auth.register(name, email, f.password.value);
+        const user = await Auth.register(name, email, f.password.value);
         UI.toast('Cuenta creada correctamente', 'success');
         go(Auth.home(user));
       } catch (ex) {
         err.textContent = ex.message;
+      } finally {
+        btn.disabled = false;
       }
     });
   }
@@ -576,13 +495,9 @@
          Cada respuesta confirmada queda bloqueada y no puede modificarse. El intento cuenta desde este momento.`,
         { title: 'Iniciar examen', okLabel: 'Comenzar' });
       if (!ok) return;
-      try {
-        const att = Domain.startAttempt(user, exam.id);
-        go('#/intento/' + att.id);
-      } catch (ex) {
-        UI.toast(ex.message, 'error');
-        render();
-      }
+      const att = await UI.run(el, () => Api.startAttempt(exam.id));
+      if (att) go('#/intento/' + att.id);
+      else render();
     };
     actions.continue = el => go('#/intento/' + el.dataset.id);
   }
@@ -730,40 +645,42 @@
         form.querySelectorAll('.option').forEach(l => l.classList.toggle('selected', l.querySelector('input').checked));
         document.getElementById('confirmBtn').disabled = !pending.length;
       });
-      form.addEventListener('submit', e => {
+      form.addEventListener('submit', async e => {
         e.preventDefault();
         if (locked || !pending.length) return;
-        try {
-          att = Domain.saveAnswer(att.id, q.id, pending);
-          pending = [];
-          UI.toast('Respuesta guardada', 'success');
-          // Avanza automáticamente a la siguiente pregunta sin responder
-          const nextIdx = qs.findIndex((x, k) => k > i && !att.answers[x.id]);
-          if (nextIdx !== -1) setIndex(nextIdx);
-          else draw();
-        } catch (ex) {
-          UI.toast(ex.message, 'error');
-        }
+        const saved = await UI.run(document.getElementById('confirmBtn'), () => Api.saveAnswer(att.id, q.id, pending));
+        if (!saved) return;
+        att = saved;
+        pending = [];
+        UI.toast('Respuesta guardada', 'success');
+        // Avanza automáticamente a la siguiente pregunta sin responder
+        const nextIdx = qs.findIndex((x, k) => k > i && !att.answers[x.id]);
+        if (nextIdx !== -1) setIndex(nextIdx);
+        else draw();
       });
     }
 
+    /** Cambia de pregunta al instante y guarda la posición en segundo plano. */
     function setIndex(i) {
       pending = [];
-      att = Domain.updateAttempt(att.id, a => { a.currentIndex = i; });
+      att.currentIndex = i;
       draw();
+      Api.setAttemptIndex(att.id, i).catch(ex => UI.toast(ex.message, 'error'));
     }
 
     actions.prev = () => { if (att.currentIndex > 0) setIndex(att.currentIndex - 1); };
     actions.next = () => { if (att.currentIndex < qs.length - 1) setIndex(att.currentIndex + 1); };
     actions.goto = el => setIndex(Number(el.dataset.i));
-    actions.finish = async () => {
+    actions.finish = async el => {
       const missing = qs.filter(x => !att.answers[x.id]).length;
       const msg = missing
         ? `Tienes <strong>${missing} pregunta(s) sin responder</strong>; se calificarán como incorrectas.<br><br>¿Deseas finalizar el examen?`
         : '¿Deseas finalizar y enviar el examen? No podrás modificar tus respuestas.';
       const ok = await UI.confirm(msg, { title: 'Finalizar examen', okLabel: 'Finalizar', danger: missing > 0 });
       if (!ok) return;
-      const { attempt, certificate } = Domain.finishAttempt(att.id);
+      const result = await UI.run(el, () => Api.finishAttempt(att.id));
+      if (!result) return;
+      const { attempt, certificate } = result;
       if (certificate && certificate.attemptId === attempt.id) UI.toast('¡Felicitaciones! Obtuviste tu certificado', 'success');
       go('#/resultado/' + attempt.id);
     };
@@ -834,7 +751,7 @@
                 <ul>
                   ${q.options.map(o => {
                     const chosen = sel.includes(o.id);
-                    const isC = q.correct.includes(o.id);
+                    const isC = (q.correct || []).includes(o.id); // sin `correct` si aún no se revela
                     let cls = '', tag = '';
                     if (reveal && isC) { cls = 'is-correct'; tag = ' ✓'; }
                     if (chosen && (!isC || !reveal)) { cls = reveal ? 'is-chosen-wrong' : ''; }
@@ -990,13 +907,14 @@
     document.getElementById('examFilter').addEventListener('change', drawResults);
     drawResults();
 
-    actions.reset = async () => {
-      const ok = await UI.confirm('Se eliminarán todos los usuarios, exámenes, intentos y certificados, y se restaurarán los datos de demostración.',
+    actions.reset = async el => {
+      const ok = await UI.confirm('Se eliminarán todos los exámenes, intentos y certificados, y se restaurarán los datos de demostración. Las cuentas de usuario no se modifican.',
         { title: 'Restablecer datos', okLabel: 'Restablecer', danger: true });
       if (!ok) return;
-      seed(true);
-      UI.toast('Datos de demostración restablecidos', 'success');
-      render();
+      if (await UI.run(el, () => Api.resetDemo().then(() => true))) {
+        UI.toast('Datos de demostración restablecidos', 'success');
+        render();
+      }
     };
   }
 
@@ -1034,15 +952,13 @@
         </table>
       </div>`;
 
-    actions.toggle = el => {
-      const all = Store.exams();
-      const e = all.find(x => x.id === el.dataset.id);
+    actions.toggle = async el => {
+      const e = Store.exams().find(x => x.id === el.dataset.id);
       if (!e) return;
       if (!e.published && !e.questions.length) return UI.toast('Agrega al menos una pregunta antes de publicar', 'error');
-      e.published = !e.published;
-      e.updatedAt = new Date().toISOString();
-      Store.saveExams(all);
-      UI.toast(e.published ? 'Examen publicado' : 'Examen desactivado', 'success');
+      const saved = await UI.run(el, () => Api.setExamPublished(e.id, !e.published));
+      if (!saved) return;
+      UI.toast(saved.published ? 'Examen publicado' : 'Examen desactivado', 'success');
       render();
     };
     actions.delete = async el => {
@@ -1051,9 +967,10 @@
       const ok = await UI.confirm(`¿Eliminar el examen «${UI.esc(e.title)}»? Los intentos y certificados históricos se conservarán.`,
         { title: 'Eliminar examen', okLabel: 'Eliminar', danger: true });
       if (!ok) return;
-      Store.saveExams(Store.exams().filter(x => x.id !== e.id));
-      UI.toast('Examen eliminado', 'success');
-      render();
+      if (await UI.run(el, () => Api.deleteExam(e.id).then(() => true))) {
+        UI.toast('Examen eliminado', 'success');
+        render();
+      }
     };
   }
 
@@ -1226,7 +1143,7 @@
       drawQuestions();
     };
 
-    document.getElementById('examForm').addEventListener('submit', e => {
+    document.getElementById('examForm').addEventListener('submit', async e => {
       e.preventDefault();
       collect();
       const title = draft.title.trim();
@@ -1246,20 +1163,14 @@
       }
       if (draft.published && !questions.length) return UI.toast('Agrega al menos una pregunta para publicar', 'error');
 
-      const now = new Date().toISOString();
-      const all = Store.exams();
-      const saved = {
+      const saved = await UI.run(e.submitter || e.target.querySelector('button[type=submit]'), () => Api.saveExam({
         id: draft.id,
         title,
         description: draft.description.trim(),
         published: draft.published,
-        questions,
-        createdAt: source ? source.createdAt : now,
-        updatedAt: now
-      };
-      const idx = all.findIndex(x => x.id === draft.id);
-      if (idx === -1) all.push(saved); else all[idx] = saved;
-      Store.saveExams(all);
+        questions
+      }));
+      if (!saved) return;
       UI.toast('Examen guardado', 'success');
       go('#/admin/examenes');
     });
@@ -1328,7 +1239,7 @@
         title: u ? 'Editar usuario' : 'Nuevo usuario',
         body: userForm(u),
         buttons: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Guardar', value: 'save', cls: 'btn-primary' }],
-        onSubmit(val, form) {
+        async onSubmit(val, form) {
           const err = form.querySelector('#uErr');
           const name = form.uname.value.trim();
           const email = form.uemail.value.trim().toLowerCase();
@@ -1343,18 +1254,14 @@
             err.textContent = 'Debe existir al menos un administrador.'; return false;
           }
 
-          if (u) {
-            const t = all.find(x => x.id === u.id);
-            t.name = name; t.email = email; t.role = role;
-            if (pass) t.passwordHash = hash(pass);
-            // mantiene el nombre de los certificados sincronizado
-            const cs = Store.certificates();
-            cs.forEach(c => { if (c.userId === t.id) c.userName = name; });
-            Store.saveCertificates(cs);
-          } else {
-            all.push({ id: uid('user'), name, email, passwordHash: hash(pass), role, createdAt: new Date().toISOString() });
+          // El servidor repite estas validaciones y sincroniza el nombre en los certificados.
+          err.textContent = '';
+          try {
+            await Api.saveUser({ id: u ? u.id : null, name, email, role, password: pass });
+          } catch (ex) {
+            err.textContent = ex.message;
+            return false;
           }
-          Store.saveUsers(all);
           return true;
         }
       }).then(v => {
@@ -1373,30 +1280,42 @@
       const ok = await UI.confirm(`¿Eliminar a <strong>${UI.esc(u.name)}</strong>? También se eliminarán sus intentos y certificados.`,
         { title: 'Eliminar usuario', okLabel: 'Eliminar', danger: true });
       if (!ok) return;
-      Store.saveUsers(Store.users().filter(x => x.id !== u.id));
-      Store.saveAttempts(Store.attempts().filter(a => a.userId !== u.id));
-      Store.saveCertificates(Store.certificates().filter(c => c.userId !== u.id));
-      UI.toast('Usuario eliminado', 'success');
-      render();
+      // En el servidor, el borrado en cascada elimina también intentos y certificados
+      if (await UI.run(el, () => Api.deleteUser(u.id).then(() => true))) {
+        UI.toast('Usuario eliminado', 'success');
+        render();
+      }
     };
   }
 
   /* =======================================================
      Arranque
      ======================================================= */
-  function init() {
-    seed(false);
+  async function init() {
     document.getElementById('year').textContent = new Date().getFullYear();
     const toggle = document.getElementById('navToggle');
     toggle.addEventListener('click', () => {
       const open = $nav.classList.toggle('open');
       toggle.setAttribute('aria-expanded', String(open));
     });
+
+    $app.innerHTML = '<p class="empty" role="status">Cargando…</p>';
+    try {
+      await window.HDIData.init();
+    } catch (ex) {
+      $app.innerHTML = `
+        <section class="card" style="max-width:520px;margin:40px auto;text-align:center">
+          <p class="eyebrow">Sin conexión</p>
+          <h1>No se pudo conectar con el servidor</h1>
+          <p class="muted">${UI.esc(ex.message)}</p>
+          <button class="btn btn-primary" type="button" onclick="location.reload()">Reintentar</button>
+        </section>`;
+      return;
+    }
+
     window.addEventListener('hashchange', render);
-    // Sincroniza si los datos cambian en otra pestaña
-    window.addEventListener('storage', e => {
-      if (e.key === KEYS.currentUser || e.key === KEYS.users) render();
-    });
+    // Sesión iniciada o cerrada en otra pestaña, o sesión expirada
+    window.HDIData.onAuthChange(render);
     render();
   }
 
