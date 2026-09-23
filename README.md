@@ -2,6 +2,8 @@
 
 Aplicación web en HTML5, CSS3 y JavaScript vanilla para presentar exámenes de opción múltiple, consultar resultados y obtener certificados. No usa frameworks, backend ni base de datos externa: toda la información se guarda en `localStorage`.
 
+**Demo en línea:** https://jcataplum.github.io/Platform/
+
 ## Ejecución
 
 - Abrir `index.html` con doble clic, o
