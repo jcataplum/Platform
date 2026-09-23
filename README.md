@@ -23,7 +23,7 @@ py -m http.server 5510
 
 ## Funcionalidades
 
-- Registro, inicio y cierre de sesión con Supabase Auth (sesión persistente).
+- Registro, inicio y cierre de sesión con Supabase Auth (sesión persistente). Las contraseñas deben tener al menos 8 caracteres.
 - Exámenes con preguntas de selección única o múltiple, una pregunta a la vez; cada respuesta confirmada se guarda y se bloquea.
 - Máximo 3 intentos por examen; cada intento se conserva de forma individual.
 - Resultados con correctas, incorrectas, porcentaje, fecha/hora y número de intento.
@@ -35,6 +35,7 @@ py -m http.server 5510
 - Las tablas (`profiles`, `exams`, `attempts`, `certificates`) no son accesibles directamente desde el navegador. Todo pasa por funciones RPC de Postgres que validan quién llama y aplican las reglas: límite de intentos, respuestas inmodificables, calificación y emisión de certificados en el servidor.
 - Las respuestas correctas nunca se envían al estudiante mientras presenta un examen; en los resultados solo se revelan cuando obtiene el certificado o agota sus intentos.
 - Los roles se asignan en el servidor: registrarse siempre crea un estudiante.
+- Contraseñas de mínimo 8 caracteres, exigido por Supabase Auth ("Minimum password length"). Si se cambia ese valor, actualizar también `MIN_PASSWORD_LENGTH` en `data.js` y en `supabase/functions/admin-users/index.ts` para que los mensajes coincidan.
 - La gestión de cuentas desde el panel admin usa la Edge Function `admin-users`, que es la única pieza con la clave `service_role`.
 
 ## Estructura
