@@ -19,6 +19,7 @@ const cors = {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const ROLES = ['admin', 'student'];
+const MIN_PASSWORD_LENGTH = 8; // igual a "Minimum password length" de Supabase Auth
 
 class HttpError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -42,7 +43,9 @@ function validate(name: string, email: string, role: string, password: string, r
   if (name.length < 3) fail(400, 'Ingresa un nombre válido.');
   if (!EMAIL_RE.test(email)) fail(400, 'Ingresa un correo válido.');
   if (!ROLES.includes(role)) fail(400, 'Rol no válido.');
-  if ((requirePassword || password) && password.length < 6) fail(400, 'La contraseña debe tener al menos 6 caracteres.');
+  if ((requirePassword || password) && password.length < MIN_PASSWORD_LENGTH) {
+    fail(400, `La contraseña debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.`);
+  }
 }
 
 function authError(error: { code?: string; message: string }): never {

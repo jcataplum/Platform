@@ -6,7 +6,7 @@
 (function () {
   'use strict';
 
-  const { Store, Api, MAX_ATTEMPTS, PASS_PERCENT, uid, isCorrect } = window.HDIData;
+  const { Store, Api, MAX_ATTEMPTS, PASS_PERCENT, MIN_PASSWORD_LENGTH, uid, isCorrect } = window.HDIData;
 
   const $app = document.getElementById('app');
   const $nav = document.getElementById('mainNav');
@@ -353,7 +353,7 @@
             <div class="form-row">
               <div class="field">
                 <label for="rPass">Contraseña</label>
-                <input class="input" id="rPass" name="password" type="password" autocomplete="new-password" minlength="6" required>
+                <input class="input" id="rPass" name="password" type="password" autocomplete="new-password" minlength="${MIN_PASSWORD_LENGTH}" required>
               </div>
               <div class="field">
                 <label for="rPass2">Confirmar</label>
@@ -376,7 +376,7 @@
       const name = f.name.value.trim(), email = f.email.value.trim();
       if (name.length < 3) { err.textContent = 'Ingresa tu nombre completo.'; return; }
       if (!UI.emailOk(email)) { err.textContent = 'Ingresa un correo válido.'; return; }
-      if (f.password.value.length < 6) { err.textContent = 'La contraseña debe tener al menos 6 caracteres.'; return; }
+      if (f.password.value.length < MIN_PASSWORD_LENGTH) { err.textContent = `La contraseña debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.`; return; }
       if (f.password.value !== f.password2.value) { err.textContent = 'Las contraseñas no coinciden.'; return; }
       err.textContent = '';
       btn.disabled = true;
@@ -1228,7 +1228,7 @@
               </select></div>
             <div class="field"><label for="uPass">Contraseña</label>
               <input class="input" id="uPass" name="upass" type="password" autocomplete="new-password"
-                placeholder="${u ? 'Dejar vacío para no cambiar' : 'Mínimo 6 caracteres'}"></div>
+                placeholder="${u ? 'Dejar vacío para no cambiar' : `Mínimo ${MIN_PASSWORD_LENGTH} caracteres`}"></div>
           </div>
           <p class="form-error" id="uErr" role="alert"></p>
         </div>`;
@@ -1249,7 +1249,7 @@
           if (name.length < 3) { err.textContent = 'Ingresa un nombre válido.'; return false; }
           if (!UI.emailOk(email)) { err.textContent = 'Ingresa un correo válido.'; return false; }
           if (all.some(x => x.email.toLowerCase() === email && (!u || x.id !== u.id))) { err.textContent = 'Ese correo ya está registrado.'; return false; }
-          if ((!u || pass) && pass.length < 6) { err.textContent = 'La contraseña debe tener al menos 6 caracteres.'; return false; }
+          if ((!u || pass) && pass.length < MIN_PASSWORD_LENGTH) { err.textContent = `La contraseña debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.`; return false; }
           if (u && u.role === 'admin' && role !== 'admin' && all.filter(x => x.role === 'admin').length <= 1) {
             err.textContent = 'Debe existir al menos un administrador.'; return false;
           }

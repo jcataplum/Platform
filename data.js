@@ -19,6 +19,7 @@
   // Solo para mostrar en la interfaz: la regla real se aplica en la base de datos.
   const MAX_ATTEMPTS = 3;
   const PASS_PERCENT = 90;
+  const MIN_PASSWORD_LENGTH = 8; // igual a "Minimum password length" de Supabase Auth
 
   const client = global.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
     auth: { persistSession: true, autoRefreshToken: true }
@@ -238,7 +239,7 @@
   }
 
   global.HDIData = {
-    MAX_ATTEMPTS, PASS_PERCENT,
+    MAX_ATTEMPTS, PASS_PERCENT, MIN_PASSWORD_LENGTH,
     client, init, refresh, onAuthChange,
     Store, Auth, Api, uid, isCorrect
   };
