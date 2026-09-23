@@ -1,6 +1,9 @@
 # Configuración local de Claude Code (permisos personales)
 .claude/settings.local.json
 
+# Configuración local de servidores MCP
+.mcp.json
+
 # Sistema operativo / editores
 Thumbs.db
 Desktop.ini
