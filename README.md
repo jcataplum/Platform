@@ -2,7 +2,7 @@
 
 Aplicación web en HTML5, CSS3 y JavaScript vanilla para presentar exámenes de opción múltiple, consultar resultados y obtener certificados. El frontend no usa frameworks; los datos, la autenticación y las reglas de negocio viven en [Supabase](https://supabase.com) (Postgres + Auth + Edge Functions).
 
-**Demo en línea:** https://jcataplum.github.io/Platform/
+**Plataforma en línea:** https://jcataplum.github.io/Platform/
 
 ## Ejecución
 
@@ -13,13 +13,6 @@ py -m http.server 5510
 ```
 
 → http://localhost:5510
-
-## Cuentas de demostración
-
-| Rol | Correo | Contraseña |
-|---|---|---|
-| Administrador | admin@hdi.com | admin123 |
-| Estudiante | estudiante@hdi.com | estudiante123 |
 
 ## Funcionalidades
 
@@ -47,8 +40,8 @@ data.js                     Cliente Supabase: caché de lectura, Auth y operacio
 app.js                      Enrutador, motor de examen y vistas
 assets/                     Logo corporativo
 supabase/migrations/        Esquema, reglas de negocio (RPC) y permisos
-supabase/seed.sql           Cuentas y datos de demostración
+supabase/seed.sql           Cuentas y datos de demostración (solo entornos locales o de prueba)
 supabase/functions/admin-users/   Edge Function para gestionar usuarios
 ```
 
-El botón **Restablecer datos demo** del panel admin reemplaza exámenes, intentos y certificados por los de demostración; no modifica las cuentas de usuario.
+> ⚠ `supabase/seed.sql` borra todos los exámenes, intentos y certificados antes de cargar los de demostración. No debe ejecutarse contra el proyecto de producción.

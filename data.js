@@ -220,11 +220,6 @@
     async deleteUser(id) {
       await invokeAdminUsers({ action: 'delete', id });
       await refresh();
-    },
-
-    async resetDemo() {
-      await rpc('admin_reset_demo');
-      await refresh();
     }
   };
 

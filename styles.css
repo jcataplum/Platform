@@ -220,8 +220,6 @@ textarea.input { min-height: 80px; resize: vertical; }
 .auth-hero li { display: flex; gap: 10px; align-items: flex-start; }
 .auth-hero li::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); margin-top: 7px; flex-shrink: 0; }
 .auth-card { max-width: 440px; width: 100%; justify-self: center; }
-.demo-box { background: var(--brand-50); border: 1px dashed var(--brand-100); border-radius: var(--radius-sm); padding: 12px; font-size: .85rem; }
-.demo-box code { background: var(--surface); padding: 1px 6px; border-radius: 4px; }
 
 /* ---------- Tarjetas de examen ---------- */
 .exam-card { display: flex; flex-direction: column; gap: 12px; }
@@ -338,8 +336,9 @@ td .btn-row { flex-wrap: nowrap; }
 .cert-text { color: var(--text); font-size: clamp(.7rem, 1.6vw, 1.05rem); margin: 0; }
 .cert-exam { font-size: clamp(.9rem, 2.4vw, 1.6rem); font-weight: 700; color: var(--brand); margin: 0; }
 .cert-foot { display: flex; justify-content: space-around; gap: 16px; position: relative; z-index: 1; font-size: clamp(.6rem, 1.3vw, .9rem); }
-.cert-foot div { border-top: 1px solid var(--brand); padding-top: 6px; min-width: 25%; }
-.cert-foot b { display: block; color: var(--brand); font-size: 1.15em; }
+.cert-foot div { min-width: 25%; }
+/* Valor sobre la línea (estilo firma) y etiqueta debajo */
+.cert-foot b { display: block; color: var(--brand); font-size: 1.15em; border-bottom: 1px solid var(--brand); padding-bottom: 6px; margin-bottom: 6px; }
 
 /* ---------- Modal / toast ---------- */
 .modal { border: 0; padding: 0; border-radius: var(--radius); box-shadow: var(--shadow-lg); width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); }

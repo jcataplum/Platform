@@ -296,21 +296,9 @@
             <p class="form-error" id="lErr" role="alert"></p>
             <button class="btn btn-primary btn-block" type="submit">Ingresar</button>
             <p class="small muted" style="text-align:center;margin:0">¿No tienes cuenta? <a href="#/registro">Regístrate</a></p>
-            <div class="demo-box">
-              <strong>Cuentas de demostración</strong><br>
-              Admin: <code>admin@hdi.com</code> / <code>admin123</code>
-              <button type="button" class="btn btn-ghost btn-sm" data-action="fill" data-email="admin@hdi.com" data-pass="admin123">Usar</button><br>
-              Estudiante: <code>estudiante@hdi.com</code> / <code>estudiante123</code>
-              <button type="button" class="btn btn-ghost btn-sm" data-action="fill" data-email="estudiante@hdi.com" data-pass="estudiante123">Usar</button>
-            </div>
           </form>
         </section>
       </div>`;
-
-    actions.fill = el => {
-      document.getElementById('lEmail').value = el.dataset.email;
-      document.getElementById('lPass').value = el.dataset.pass;
-    };
 
     document.getElementById('loginForm').addEventListener('submit', async e => {
       e.preventDefault();
@@ -796,7 +784,7 @@
         </div>
         <div class="cert-foot">
           <div><b>${UI.fmtDate(c.issuedAt)}</b>Fecha de emisión</div>
-          <div><b>Campus HDI</b>Dirección de Formación</div>
+          <div><b>Jennifer Catalina Duque Jaramillo</b>Gerente de Proyectos</div>
         </div>
       </article>`;
 
@@ -837,7 +825,6 @@
       <div class="page-head">
         <div><p class="eyebrow">Panel administrativo</p><h1>Dashboard</h1>
         <p class="muted">Resumen general de la plataforma.</p></div>
-        <button class="btn btn-danger btn-sm" data-action="reset">Restablecer datos demo</button>
       </div>
       ${adminTabs('#/admin')}
       <div class="grid grid-kpi">
@@ -906,16 +893,6 @@
     };
     document.getElementById('examFilter').addEventListener('change', drawResults);
     drawResults();
-
-    actions.reset = async el => {
-      const ok = await UI.confirm('Se eliminarán todos los exámenes, intentos y certificados, y se restaurarán los datos de demostración. Las cuentas de usuario no se modifican.',
-        { title: 'Restablecer datos', okLabel: 'Restablecer', danger: true });
-      if (!ok) return;
-      if (await UI.run(el, () => Api.resetDemo().then(() => true))) {
-        UI.toast('Datos de demostración restablecidos', 'success');
-        render();
-      }
-    };
   }
 
   /* =======================================================

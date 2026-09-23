@@ -7,6 +7,9 @@
 --   estudiante@hdi.com  / estudiante123  (Laura Gómez)
 --
 -- Contraseñas débiles solo para demostración: cámbialas en producción.
+--
+-- ⚠ SOLO PARA ENTORNOS LOCALES O DE PRUEBA. No ejecutar en producción:
+-- private.seed_demo() borra todos los exámenes, intentos y certificados.
 -- =========================================================
 
 insert into auth.users (
