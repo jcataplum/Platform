@@ -895,6 +895,14 @@
               : '<tr><td colspan="6" class="empty">Aún no se han emitido certificados.</td></tr>'}</tbody>
           </table>
         </div>
+      </section>
+
+      <section class="section">
+        <div class="section-title"><h2>Reporte de calificaciones</h2></div>
+        <div class="card" style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between">
+          <p class="muted" style="margin:0;max-width:640px">Descarga el listado de todos los estudiantes con cada examen presentado, el número de intentos realizados y la calificación y fecha de cada intento, la mejor calificación y el estado de certificación. Se abre en Excel.</p>
+          <button type="button" class="btn btn-accent" data-action="downloadGrades">Descargar reporte (Excel)</button>
+        </div>
       </section>`;
 
     const drawResults = () => {
@@ -912,6 +920,7 @@
       const title = f ? list[0].examTitle : 'todos';
       downloadAnswersCsv(list, `respuestas-${slug(title)}-${today()}.csv`);
     };
+    actions.downloadGrades = () => downloadGradesCsv(`reporte-calificaciones-${today()}.csv`);
   }
 
   /* =======================================================
@@ -963,7 +972,57 @@
         ]));
       });
     });
+    downloadCsv(rows, filename);
+  }
 
+  /**
+   * Resumen de calificaciones: una fila por estudiante y examen con cada intento.
+   * Los estudiantes sin intentos también aparecen, para tener el listado completo.
+   */
+  function downloadGradesCsv(filename) {
+    const users = Store.users().filter(u => u.role === 'student' || Store.attempts().some(a => a.userId === u.id))
+      .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+    const atts = Store.attempts();
+    const certs = Store.certificates();
+    const grade = a => a.status === 'finished' ? a.percentage + '%' : 'En curso';
+
+    const rows = [[
+      'Estudiante', 'Correo', 'Examen', 'Intentos realizados',
+      ...Array.from({ length: MAX_ATTEMPTS }, (_, i) => [`Calificación intento ${i + 1}`, `Fecha intento ${i + 1}`]).flat(),
+      'Mejor calificación', 'Estado', 'Código certificado'
+    ]];
+    users.forEach(u => {
+      const mine = atts.filter(a => a.userId === u.id);
+      const examIds = Array.from(new Set(mine.map(a => a.examId)));
+      if (!examIds.length) {
+        rows.push([u.name, u.email, 'Sin intentos', 0, ...Array(MAX_ATTEMPTS * 2).fill(''), '', '', '']);
+        return;
+      }
+      examIds.map(id => Domain.attemptsFor(u.id, id))
+        .sort((a, b) => a[0].examTitle.localeCompare(b[0].examTitle, 'es'))
+        .forEach(list => {
+          const finished = list.filter(a => a.status === 'finished');
+          const best = finished.length ? Math.max(...finished.map(a => a.percentage)) : null;
+          const cert = certs.find(c => c.userId === u.id && c.examId === list[0].examId);
+          const cols = [];
+          for (let i = 1; i <= MAX_ATTEMPTS; i++) {
+            const a = list.find(x => x.number === i);
+            cols.push(a ? grade(a) + (a.manual ? ' (manual)' : '') : '',
+                      a ? UI.fmtDateTime(a.status === 'finished' ? a.finishedAt : a.startedAt) : '');
+          }
+          rows.push([
+            u.name, u.email, list[0].examTitle, list.length, ...cols,
+            best === null ? '' : best + '%',
+            cert ? 'Aprobado (certificado)' : (list.length >= MAX_ATTEMPTS && !list.some(a => a.status === 'in_progress') ? 'No aprobado · sin intentos' : 'En proceso'),
+            cert ? cert.code : ''
+          ]);
+        });
+    });
+    downloadCsv(rows, filename);
+  }
+
+  /** Genera y descarga un CSV a partir de filas (arreglos de celdas). */
+  function downloadCsv(rows, filename) {
     // Punto y coma y BOM: Excel en español lo abre en columnas y con tildes correctas
     const cell = v => {
       let s = String(v == null ? '' : v);
