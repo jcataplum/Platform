@@ -1628,7 +1628,8 @@
      Administración — usuarios
      ======================================================= */
   function viewAdminUsers(me) {
-    const users = Store.users();
+    const users = Store.users().sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
+    const students = users.filter(u => u.role === 'student').length;
     const atts = Store.attempts();
     const certs = Store.certificates();
 
@@ -1636,7 +1637,12 @@
       <div class="page-head">
         <div><p class="eyebrow">Panel administrativo</p><h1>Usuarios</h1>
         <p class="muted">Gestiona estudiantes y administradores.</p></div>
-        <button class="btn btn-accent" data-action="new">+ Nuevo usuario</button>
+        <div class="btn-row">
+          <button type="button" class="btn btn-outline" data-action="count" aria-label="${users.length} usuarios registrados. Ver detalle">
+            Usuarios registrados <span class="badge badge-accent">${users.length}</span>
+          </button>
+          <button class="btn btn-accent" data-action="new">+ Nuevo usuario</button>
+        </div>
       </div>
       ${adminTabs('#/admin/usuarios')}
       <div class="table-wrap">
@@ -1791,6 +1797,16 @@
       });
     };
 
+    actions.count = () => UI.modal({
+      title: 'Usuarios registrados',
+      body: `
+        <div class="grid grid-kpi" style="margin:0">
+          <div class="card kpi"><div class="kpi-value">${users.length}</div><div class="kpi-label">Total</div></div>
+          <div class="card kpi accent"><div class="kpi-value">${students}</div><div class="kpi-label">Estudiantes</div></div>
+          <div class="card kpi"><div class="kpi-value">${users.length - students}</div><div class="kpi-label">Administradores</div></div>
+        </div>`,
+      buttons: [{ label: 'Cerrar', value: 'cancel', cls: 'btn-primary' }]
+    });
     actions.new = () => openForm(null);
     actions.edit = el => openForm(Store.users().find(x => x.id === el.dataset.id));
     actions.delete = async el => {
