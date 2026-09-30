@@ -182,7 +182,9 @@
     { re: /^#\/admin$/, view: viewAdminDashboard, access: 'admin' },
     { re: /^#\/admin\/examenes$/, view: viewAdminExams, access: 'admin' },
     { re: /^#\/admin\/examen\/([\w-]+)$/, view: viewExamEditor, access: 'admin' },
-    { re: /^#\/admin\/usuarios$/, view: viewAdminUsers, access: 'admin' }
+    { re: /^#\/admin\/usuarios$/, view: viewAdminUsers, access: 'admin' },
+    { re: /^#\/admin\/intento\/([\w-]+)$/, view: viewAdminAttemptEdit, access: 'admin' },
+    { re: /^#\/admin\/registrar\/([\w-]+)\/([\w-]+)$/, view: viewAdminAttemptNew, access: 'admin' }
   ];
 
   function go(hash) {
@@ -232,7 +234,8 @@
     } else {
       links = [['#/panel', 'Mis exámenes'], ['#/resultados', 'Resultados'], ['#/certificados', 'Certificados']];
     }
-    const isActive = h => hash === h || (h === '#/admin/examenes' && hash.startsWith('#/admin/examen/'));
+    const isActive = h => hash === h || (h === '#/admin/examenes' && hash.startsWith('#/admin/examen/')) ||
+      (h === '#/admin/usuarios' && /^#\/admin\/(intento|registrar)\//.test(hash));
     $nav.innerHTML = links.map(([h, l]) =>
       `<a href="${h}" class="${isActive(h) ? 'active' : ''}" ${isActive(h) ? 'aria-current="page"' : ''}>${l}</a>`
     ).join('') + (user ? `
@@ -442,13 +445,14 @@
               return `<tr>
                 ${showUser ? `<td data-label="Estudiante">${UI.esc(userName(a.userId))}</td>` : ''}
                 <td data-label="Examen">${UI.esc(a.examTitle)}</td>
-                <td data-label="Intento">#${a.number}</td>
+                <td data-label="Intento">#${a.number}${a.manual ? ' <span class="badge badge-neutral" title="Registrado por un administrador">Manual</span>' : ''}</td>
                 <td data-label="Fecha">${UI.fmtDateTime(done ? a.finishedAt : a.startedAt)}</td>
                 <td data-label="Correctas">${done ? a.correctCount : '—'}</td>
                 <td data-label="Incorrectas">${done ? a.total - a.correctCount : '—'}</td>
                 <td data-label="Resultado">${done ? UI.badgeForPercent(a.percentage) : '<span class="badge badge-accent">En curso</span>'}</td>
                 <td data-label="">${done
-                  ? `<a class="btn btn-outline btn-sm" href="#/resultado/${a.id}">Ver detalle</a>`
+                  ? `<div class="btn-row"><a class="btn btn-outline btn-sm" href="#/resultado/${a.id}">Ver detalle</a>${showUser
+                    ? `<a class="btn btn-ghost btn-sm" href="#/admin/intento/${a.id}">Editar</a>` : ''}</div>`
                   : (!showUser ? `<a class="btn btn-accent btn-sm" href="#/intento/${a.id}">Continuar</a>` : '')}</td>
               </tr>`;
             }).join('')}
@@ -697,8 +701,13 @@
           <p class="eyebrow">Resultado · Intento ${att.number} de ${MAX_ATTEMPTS}</p>
           <h1>${UI.esc(att.examTitle)}</h1>
           ${user.role === 'admin' ? `<p class="muted">Estudiante: ${UI.esc(owner ? owner.name : 'Usuario eliminado')}</p>` : ''}
+          ${att.manual ? '<p class="small muted">Registrado por un administrador (evaluación presentada por otro medio).</p>'
+            : att.editedAt ? `<p class="small muted">Respuestas editadas por un administrador el ${UI.fmtDateTime(att.editedAt)}.</p>` : ''}
         </div>
-        <a class="btn btn-outline btn-sm" href="${back}">&larr; Volver</a>
+        <div class="btn-row">
+          ${user.role === 'admin' ? `<a class="btn btn-primary btn-sm" href="#/admin/intento/${att.id}">Editar respuestas</a>` : ''}
+          <a class="btn btn-outline btn-sm" href="${back}">&larr; Volver</a>
+        </div>
       </div>
 
       <section class="card result-hero">
@@ -855,15 +864,18 @@
       <section class="section">
         <div class="section-title">
           <h2>Resultados</h2>
-          <label class="small" style="display:flex;gap:8px;align-items:center">Filtrar
-            <select class="input" id="examFilter" style="width:auto">
-              <option value="">Todos los exámenes</option>
-              ${examIds.map(id => {
-                const a = atts.find(x => x.examId === id);
-                return `<option value="${id}">${UI.esc(a.examTitle)}</option>`;
-              }).join('')}
-            </select>
-          </label>
+          <div class="btn-row">
+            <label class="small" style="display:flex;gap:8px;align-items:center">Filtrar
+              <select class="input" id="examFilter" style="width:auto">
+                <option value="">Todos los exámenes</option>
+                ${examIds.map(id => {
+                  const a = atts.find(x => x.examId === id);
+                  return `<option value="${id}">${UI.esc(a.examTitle)}</option>`;
+                }).join('')}
+              </select>
+            </label>
+            <button type="button" class="btn btn-outline btn-sm" data-action="download" ${atts.length ? '' : 'disabled'}>Descargar respuestas (Excel)</button>
+          </div>
         </div>
         <div id="resultsTable"></div>
       </section>
@@ -893,6 +905,80 @@
     };
     document.getElementById('examFilter').addEventListener('change', drawResults);
     drawResults();
+
+    actions.download = () => {
+      const f = document.getElementById('examFilter').value;
+      const list = atts.filter(a => !f || a.examId === f);
+      const title = f ? list[0].examTitle : 'todos';
+      downloadAnswersCsv(list, `respuestas-${slug(title)}-${today()}.csv`);
+    };
+  }
+
+  /* =======================================================
+     Exportación de respuestas (CSV compatible con Excel)
+     ======================================================= */
+  function slug(s) {
+    return String(s).normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'archivo';
+  }
+
+  function today() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  /** Una fila por pregunta de cada intento, con el resumen del intento repetido para filtrar en Excel. */
+  function downloadAnswersCsv(atts, filename) {
+    const users = Store.users();
+    const certs = Store.certificates();
+    const optText = (q, ids) => (ids || []).map(id => (q.options.find(o => o.id === id) || {}).text || id).join(' | ');
+    const sorted = atts.slice().sort((a, b) => {
+      const ua = (users.find(u => u.id === a.userId) || {}).name || '';
+      const ub = (users.find(u => u.id === b.userId) || {}).name || '';
+      return ua.localeCompare(ub, 'es') || a.examTitle.localeCompare(b.examTitle, 'es') || a.number - b.number;
+    });
+
+    const rows = [[
+      'Estudiante', 'Correo', 'Examen', 'Intento', 'Estado', 'Origen', 'Fecha inicio', 'Fecha finalización',
+      'Correctas', 'Total preguntas', 'Porcentaje', 'Certificado', 'N° pregunta', 'Pregunta', 'Tipo',
+      'Respuesta del estudiante', 'Respuesta correcta', 'Resultado'
+    ]];
+    sorted.forEach(a => {
+      const u = users.find(x => x.id === a.userId);
+      const done = a.status === 'finished';
+      const cert = certs.find(c => c.attemptId === a.id);
+      const head = [
+        u ? u.name : 'Usuario eliminado', u ? u.email : '', a.examTitle, a.number,
+        done ? 'Finalizado' : 'En curso',
+        a.manual ? 'Registrado por administrador' : (a.editedAt ? 'Plataforma (editado)' : 'Plataforma'),
+        UI.fmtDateTime(a.startedAt), done ? UI.fmtDateTime(a.finishedAt) : '',
+        done ? a.correctCount : '', a.total, done ? a.percentage + '%' : '', cert ? cert.code : ''
+      ];
+      a.questionsSnapshot.forEach((q, k) => {
+        const sel = a.answers[q.id] || [];
+        rows.push(head.concat([
+          k + 1, q.text, q.type === 'multiple' ? 'Selección múltiple' : 'Selección única',
+          sel.length ? optText(q, sel) : 'Sin responder', optText(q, q.correct),
+          !done && !sel.length ? '' : (Domain.isCorrect(q, sel) ? 'Correcta' : 'Incorrecta')
+        ]));
+      });
+    });
+
+    // Punto y coma y BOM: Excel en español lo abre en columnas y con tildes correctas
+    const cell = v => {
+      let s = String(v == null ? '' : v);
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // evita que Excel lo interprete como fórmula
+      return /[";\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const csv = '﻿' + rows.map(r => r.map(cell).join(';')).join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   /* =======================================================
@@ -1183,7 +1269,9 @@
               <td data-label="Registro">${UI.fmtDate(u.createdAt)}</td>
               <td data-label="Acciones"><div class="btn-row">
                 <button class="btn btn-outline btn-sm" data-action="edit" data-id="${u.id}">Editar</button>
-                ${atts.some(a => a.userId === u.id) ? `<button class="btn btn-outline btn-sm" data-action="resetAttempts" data-id="${u.id}">Reiniciar intentos</button>` : ''}
+                ${u.role === 'student' ? `<button class="btn btn-outline btn-sm" data-action="recordAttempt" data-id="${u.id}">Registrar evaluación</button>` : ''}
+                ${atts.some(a => a.userId === u.id) ? `<button class="btn btn-outline btn-sm" data-action="download" data-id="${u.id}">Descargar respuestas</button>
+                <button class="btn btn-outline btn-sm" data-action="resetAttempts" data-id="${u.id}">Reiniciar intentos</button>` : ''}
                 <button class="btn btn-danger btn-sm" data-action="delete" data-id="${u.id}" ${u.id === me.id ? 'disabled title="No puedes eliminar tu propia cuenta"' : ''}>Eliminar</button>
               </div></td></tr>`).join('')}
           </tbody>
@@ -1290,6 +1378,43 @@
       });
     };
 
+    actions.download = el => {
+      const u = users.find(x => x.id === el.dataset.id);
+      if (!u) return;
+      downloadAnswersCsv(atts.filter(a => a.userId === u.id), `respuestas-${slug(u.name)}-${today()}.csv`);
+    };
+
+    /** Elige el examen y abre el formulario para registrar una evaluación hecha por otro medio. */
+    actions.recordAttempt = el => {
+      const u = users.find(x => x.id === el.dataset.id);
+      if (!u) return;
+      const exams = Store.exams().filter(e => e.questions.length);
+      if (!exams.length) return UI.toast('No hay exámenes con preguntas', 'error');
+      const used = examId => atts.filter(a => a.userId === u.id && a.examId === examId).length;
+
+      UI.modal({
+        title: 'Registrar evaluación',
+        body: `
+          <div class="form">
+            <p style="margin:0">Estudiante: <strong>${UI.esc(u.name)}</strong></p>
+            <div class="field"><label for="pExam">Examen</label>
+              <select class="input" id="pExam" name="pexam">
+                ${exams.map(e => `<option value="${UI.esc(e.id)}" ${used(e.id) >= MAX_ATTEMPTS ? 'disabled' : ''}>${UI.esc(e.title)} — ${used(e.id)}/${MAX_ATTEMPTS} intentos${e.published ? '' : ' (inactivo)'}</option>`).join('')}
+              </select></div>
+            <p class="small muted" style="margin:0">Registra las respuestas de una evaluación que el estudiante presentó por otro medio. Se guarda como un intento nuevo y cuenta para el máximo de ${MAX_ATTEMPTS}. Para corregir un intento existente usa «Editar» en sus resultados.</p>
+          </div>`,
+        buttons: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Continuar', value: 'go', cls: 'btn-primary' }],
+        onSubmit(val, form) {
+          if (!form.pexam.value || used(form.pexam.value) >= MAX_ATTEMPTS) {
+            UI.toast('El estudiante ya usó todos sus intentos en ese examen', 'error');
+            return false;
+          }
+          go(`#/admin/registrar/${u.id}/${form.pexam.value}`);
+          return true;
+        }
+      });
+    };
+
     actions.new = () => openForm(null);
     actions.edit = el => openForm(Store.users().find(x => x.id === el.dataset.id));
     actions.delete = async el => {
@@ -1307,6 +1432,185 @@
         render();
       }
     };
+  }
+
+  /* =======================================================
+     Administración — registrar o editar las respuestas de un intento
+     ======================================================= */
+  function viewAdminAttemptEdit(user, attemptId) {
+    const att = Store.attempts().find(a => a.id === attemptId);
+    if (!att) return renderNotFound(user);
+    if (att.status !== 'finished') {
+      $app.innerHTML = `
+        <section class="card" style="max-width:560px;margin:40px auto;text-align:center">
+          <h1>Intento en curso</h1>
+          <p class="muted">El estudiante está presentando este intento. Podrás editarlo cuando lo finalice.</p>
+          <a class="btn btn-primary" href="#/admin">Volver</a>
+        </section>`;
+      return;
+    }
+    attemptEditor(user, { att, userId: att.userId, examId: att.examId });
+  }
+
+  function viewAdminAttemptNew(user, userId, examId) {
+    const exam = Domain.exam(examId);
+    if (!exam || !exam.questions.length || !Store.users().some(u => u.id === userId)) return renderNotFound(user);
+    attemptEditor(user, { att: null, userId, examId });
+  }
+
+  /** datetime-local ↔ ISO en la zona horaria del navegador */
+  function toLocalInput(iso) {
+    const d = iso ? new Date(iso) : new Date();
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().slice(0, 16);
+  }
+
+  function attemptEditor(user, { att, userId, examId }) {
+    const owner = Store.users().find(u => u.id === userId);
+    const exam = Domain.exam(examId);
+    const questions = att ? att.questionsSnapshot : exam.questions;
+    const title = att ? att.examTitle : exam.title;
+    const number = att ? att.number : Domain.attemptsFor(userId, examId).length + 1;
+    const cert = Domain.certFor(userId, examId);
+    const backsCert = !!(att && cert && cert.attemptId === att.id);
+    const back = att ? '#/resultado/' + att.id : '#/admin/usuarios';
+
+    $app.innerHTML = `
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Panel administrativo · ${att ? 'Editar intento' : 'Registrar evaluación'}</p>
+          <h1>${UI.esc(title)}</h1>
+          <p class="muted">Estudiante: <strong>${UI.esc(owner ? owner.name : 'Usuario eliminado')}</strong> · Intento ${number} de ${MAX_ATTEMPTS}</p>
+        </div>
+        <a class="btn btn-outline btn-sm" href="${back}">&larr; Volver</a>
+      </div>
+      <div class="alert alert-info">${att
+        ? 'Corrige las respuestas del estudiante. La calificación y el certificado se recalculan al guardar; el cambio queda registrado.'
+        : 'Marca las respuestas que el estudiante dio en la evaluación presentada por otro medio. Se guardará como un intento finalizado.'}
+        Las opciones marcadas con ✓ son las correctas.</div>
+
+      <form id="attForm" class="form" novalidate>
+        <section class="card form">
+          <div class="form-row">
+            <div class="field">
+              <label for="aDate">Fecha y hora de presentación</label>
+              <input class="input" id="aDate" type="datetime-local" max="${toLocalInput()}" value="${toLocalInput(att ? att.finishedAt : null)}" required>
+            </div>
+            <div class="field" style="align-content:end">
+              <p class="small" style="margin:0" id="aScore" aria-live="polite"></p>
+            </div>
+          </div>
+        </section>
+
+        <section class="section" style="margin-top:8px">
+          <div class="section-title"><h2>Respuestas</h2></div>
+          <div class="card" id="aList">
+            ${questions.map((q, k) => {
+              const sel = att ? (att.answers[q.id] || []) : [];
+              const type = q.type === 'multiple' ? 'checkbox' : 'radio';
+              return `
+                <fieldset class="review-item" data-qid="${UI.esc(q.id)}" style="margin-inline:0;min-width:0">
+                  <legend class="hidden">Pregunta ${k + 1}</legend>
+                  <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+                    <strong>${k + 1}. ${UI.esc(q.text)}</strong>
+                    <span class="badge ${q.type === 'multiple' ? 'badge-accent' : 'badge-neutral'}">${q.type === 'multiple' ? 'Selección múltiple' : 'Selección única'}</span>
+                  </div>
+                  <div class="options" style="margin:12px 0 6px">
+                    ${q.options.map(o => `
+                      <label class="option ${sel.includes(o.id) ? 'selected' : ''}">
+                        <input type="${type}" name="a_${UI.esc(q.id)}" value="${UI.esc(o.id)}" ${sel.includes(o.id) ? 'checked' : ''}>
+                        <span>${UI.esc(o.text)}${(q.correct || []).includes(o.id) ? ' <strong style="color:var(--success)">✓</strong>' : ''}</span>
+                      </label>`).join('')}
+                  </div>
+                  <button type="button" class="btn btn-ghost btn-sm" data-action="clearQ" data-qid="${UI.esc(q.id)}">Dejar sin responder</button>
+                </fieldset>`;
+            }).join('')}
+          </div>
+        </section>
+
+        <div class="btn-row" style="justify-content:flex-end;border-top:1px solid var(--border);padding-top:16px">
+          <a class="btn btn-outline" href="${back}">Cancelar</a>
+          <button type="submit" class="btn btn-primary">${att ? 'Guardar cambios' : 'Registrar evaluación'}</button>
+        </div>
+      </form>`;
+
+    const $list = document.getElementById('aList');
+    const initialDate = document.getElementById('aDate').value;
+    const boxes = () => Array.from($list.querySelectorAll('fieldset[data-qid]'));
+
+    function collect() {
+      const answers = {};
+      boxes().forEach(box => {
+        const ids = Array.from(box.querySelectorAll('input:checked')).map(i => i.value);
+        if (ids.length) answers[box.dataset.qid] = ids;
+      });
+      return answers;
+    }
+
+    function score(answers) {
+      const correct = questions.filter(q => Domain.isCorrect(q, answers[q.id] || [])).length;
+      return { correct, percentage: Math.round(correct * 100 / questions.length) };
+    }
+
+    function refreshScore() {
+      const answers = collect();
+      const s = score(answers);
+      const answered = Object.keys(answers).length;
+      boxes().forEach(box => {
+        box.classList.toggle('wrong', !Domain.isCorrect(questions.find(q => q.id === box.dataset.qid), answers[box.dataset.qid] || []));
+        box.querySelectorAll('.option').forEach(l => l.classList.toggle('selected', l.querySelector('input').checked));
+      });
+      document.getElementById('aScore').innerHTML =
+        `Resultado: <strong>${s.correct}/${questions.length}</strong> correctas · ${UI.badgeForPercent(s.percentage)}
+         <br><span class="muted">${answered} de ${questions.length} respondidas</span>`;
+    }
+
+    $list.addEventListener('change', refreshScore);
+    actions.clearQ = el => {
+      const box = boxes().find(b => b.dataset.qid === el.dataset.qid);
+      if (box) box.querySelectorAll('input').forEach(i => { i.checked = false; });
+      refreshScore();
+    };
+
+    document.getElementById('attForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const btn = e.submitter || e.target.querySelector('button[type=submit]');
+      if (btn.disabled) return;
+      const dateVal = document.getElementById('aDate').value;
+      const takenAt = dateVal ? new Date(dateVal) : null;
+      if (!takenAt || isNaN(takenAt)) return UI.toast('Indica la fecha y hora de presentación', 'error');
+      if (takenAt > new Date()) return UI.toast('La fecha de presentación no puede estar en el futuro', 'error');
+
+      const answers = collect();
+      const s = score(answers);
+      const missing = questions.length - Object.keys(answers).length;
+      let msg = att
+        ? `Se actualizarán las respuestas del <strong>intento ${number}</strong> de ${UI.esc(owner ? owner.name : '')}. Nuevo resultado: <strong>${s.percentage}%</strong>.`
+        : `Se registrará el <strong>intento ${number} de ${MAX_ATTEMPTS}</strong> de ${UI.esc(owner ? owner.name : '')} con un resultado de <strong>${s.percentage}%</strong>.`;
+      if (missing) msg += `<br><br>${missing} pregunta(s) quedan sin responder y se calificarán como incorrectas.`;
+      if (backsCert && s.percentage < PASS_PERCENT) {
+        msg += `<br><br><strong>El certificado ${UI.esc(cert.code)} se retirará</strong> porque este intento quedará por debajo del ${PASS_PERCENT}% (se emitirá uno nuevo si otro intento lo supera).`;
+      } else if (!cert && s.percentage >= PASS_PERCENT) {
+        msg += '<br><br>Se emitirá el certificado del examen.';
+      }
+      const ok = await UI.confirm(msg, {
+        title: att ? 'Guardar cambios' : 'Registrar evaluación',
+        okLabel: att ? 'Guardar' : 'Registrar',
+        danger: backsCert && s.percentage < PASS_PERCENT
+      });
+      if (!ok) return;
+
+      // Al editar, la fecha solo se envía si cambió (el campo no guarda segundos)
+      const sendDate = !att || dateVal !== initialDate;
+      const saved = await UI.run(btn, () => Api.saveAttemptAsAdmin({
+        attemptId: att ? att.id : null, userId, examId, answers, takenAt: sendDate ? takenAt.toISOString() : null
+      }));
+      if (!saved) return;
+      UI.toast(att ? 'Intento actualizado' : 'Evaluación registrada', 'success');
+      go('#/resultado/' + saved.id);
+    });
+
+    refreshScore();
   }
 
   /* =======================================================

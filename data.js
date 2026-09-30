@@ -227,6 +227,21 @@
       const count = await rpc('admin_reset_attempts', { p_user_id: userId, p_exam_id: examId });
       await refresh();
       return count;
+    },
+
+    /**
+     * Admin: con attemptId reemplaza las respuestas de un intento finalizado; sin él
+     * registra un intento nuevo de userId en examId (evaluación hecha por otro medio).
+     * answers: { questionId: [optionId] }. takenAt: ISO o null.
+     */
+    async saveAttemptAsAdmin({ attemptId, userId, examId, answers, takenAt }) {
+      const att = await rpc('admin_save_attempt', {
+        p_attempt_id: attemptId || null, p_user_id: userId || null, p_exam_id: examId || null,
+        p_answers: answers, p_taken_at: takenAt || null
+      });
+      // Recarga todo: puede emitir, ajustar o retirar el certificado.
+      await refresh();
+      return clone(att);
     }
   };
 
