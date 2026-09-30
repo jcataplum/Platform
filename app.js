@@ -900,8 +900,11 @@
       <section class="section">
         <div class="section-title"><h2>Reporte de calificaciones</h2></div>
         <div class="card" style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between">
-          <p class="muted" style="margin:0;max-width:640px">Descarga el listado de todos los estudiantes con cada examen presentado, el número de intentos realizados y la calificación y fecha de cada intento, la mejor calificación y el estado de certificación. Se abre en Excel.</p>
-          <button type="button" class="btn btn-accent" data-action="downloadGrades">Descargar reporte (Excel)</button>
+          <p class="muted" style="margin:0;max-width:640px">Descarga el listado de todos los estudiantes con cada examen presentado, el número de intentos realizados y la calificación y fecha de cada intento, la mejor calificación y el estado de certificación, en Excel o en PDF.</p>
+          <div class="btn-row">
+            <button type="button" class="btn btn-accent" data-action="downloadGrades">Descargar reporte (Excel)</button>
+            <button type="button" class="btn btn-primary" data-action="downloadGradesPdf">Descargar reporte (PDF)</button>
+          </div>
         </div>
       </section>`;
 
@@ -921,6 +924,7 @@
       downloadAnswersCsv(list, `respuestas-${slug(title)}-${today()}.csv`);
     };
     actions.downloadGrades = () => downloadGradesCsv(`reporte-calificaciones-${today()}.csv`);
+    actions.downloadGradesPdf = el => UI.run(el, () => downloadGradesPdf(`reporte-calificaciones-${today()}.pdf`));
   }
 
   /* =======================================================
@@ -979,23 +983,18 @@
    * Resumen de calificaciones: una fila por estudiante y examen con cada intento.
    * Los estudiantes sin intentos también aparecen, para tener el listado completo.
    */
-  function downloadGradesCsv(filename) {
+  function gradesReport() {
     const users = Store.users().filter(u => u.role === 'student' || Store.attempts().some(a => a.userId === u.id))
       .sort((a, b) => a.name.localeCompare(b.name, 'es'));
     const atts = Store.attempts();
     const certs = Store.certificates();
-    const grade = a => a.status === 'finished' ? a.percentage + '%' : 'En curso';
+    const records = [];
 
-    const rows = [[
-      'Estudiante', 'Correo', 'Examen', 'Intentos realizados',
-      ...Array.from({ length: MAX_ATTEMPTS }, (_, i) => [`Calificación intento ${i + 1}`, `Fecha intento ${i + 1}`]).flat(),
-      'Mejor calificación', 'Estado', 'Código certificado'
-    ]];
     users.forEach(u => {
-      const mine = atts.filter(a => a.userId === u.id);
-      const examIds = Array.from(new Set(mine.map(a => a.examId)));
+      const examIds = Array.from(new Set(atts.filter(a => a.userId === u.id).map(a => a.examId)));
       if (!examIds.length) {
-        rows.push([u.name, u.email, 'Sin intentos', 0, ...Array(MAX_ATTEMPTS * 2).fill(''), '', '', '']);
+        records.push({ name: u.name, email: u.email, exam: 'Sin intentos', count: 0,
+          attempts: Array(MAX_ATTEMPTS).fill(null), best: '', status: '', cert: '' });
         return;
       }
       examIds.map(id => Domain.attemptsFor(u.id, id))
@@ -1004,21 +1003,141 @@
           const finished = list.filter(a => a.status === 'finished');
           const best = finished.length ? Math.max(...finished.map(a => a.percentage)) : null;
           const cert = certs.find(c => c.userId === u.id && c.examId === list[0].examId);
-          const cols = [];
-          for (let i = 1; i <= MAX_ATTEMPTS; i++) {
-            const a = list.find(x => x.number === i);
-            cols.push(a ? grade(a) + (a.manual ? ' (manual)' : '') : '',
-                      a ? UI.fmtDateTime(a.status === 'finished' ? a.finishedAt : a.startedAt) : '');
-          }
-          rows.push([
-            u.name, u.email, list[0].examTitle, list.length, ...cols,
-            best === null ? '' : best + '%',
-            cert ? 'Aprobado (certificado)' : (list.length >= MAX_ATTEMPTS && !list.some(a => a.status === 'in_progress') ? 'No aprobado · sin intentos' : 'En proceso'),
-            cert ? cert.code : ''
-          ]);
+          records.push({
+            name: u.name, email: u.email, exam: list[0].examTitle, count: list.length,
+            attempts: Array.from({ length: MAX_ATTEMPTS }, (_, i) => {
+              const a = list.find(x => x.number === i + 1);
+              return a ? {
+                grade: (a.status === 'finished' ? a.percentage + '%' : 'En curso') + (a.manual ? ' (manual)' : ''),
+                date: UI.fmtDateTime(a.status === 'finished' ? a.finishedAt : a.startedAt)
+              } : null;
+            }),
+            best: best === null ? '' : best + '%',
+            status: cert ? 'Aprobado (certificado)'
+              : (list.length >= MAX_ATTEMPTS && !list.some(a => a.status === 'in_progress') ? 'No aprobado · sin intentos' : 'En proceso'),
+            cert: cert ? cert.code : ''
+          });
         });
     });
+    return records;
+  }
+
+  function downloadGradesCsv(filename) {
+    const rows = [[
+      'Estudiante', 'Correo', 'Examen', 'Intentos realizados',
+      ...Array.from({ length: MAX_ATTEMPTS }, (_, i) => [`Calificación intento ${i + 1}`, `Fecha intento ${i + 1}`]).flat(),
+      'Mejor calificación', 'Estado', 'Código certificado'
+    ]];
+    gradesReport().forEach(r => rows.push([
+      r.name, r.email, r.exam, r.count,
+      ...r.attempts.flatMap(a => a ? [a.grade, a.date] : ['', '']),
+      r.best, r.status, r.cert
+    ]));
     downloadCsv(rows, filename);
+  }
+
+  /** Carga un script una sola vez (las librerías de PDF solo se descargan al usarlas). */
+  const loadedScripts = {};
+  function loadScript(src) {
+    if (!loadedScripts[src]) {
+      loadedScripts[src] = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = () => { delete loadedScripts[src]; reject(new Error('No se pudo cargar el generador de PDF. Revisa tu conexión.')); };
+        document.head.appendChild(s);
+      });
+    }
+    return loadedScripts[src];
+  }
+
+  function imageDataUrl(src) {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        c.getContext('2d').drawImage(img, 0, 0);
+        resolve({ data: c.toDataURL('image/png'), w: img.naturalWidth, h: img.naturalHeight });
+      };
+      img.onerror = () => resolve(null); // el reporte sale sin logo
+      img.src = src;
+    });
+  }
+
+  async function downloadGradesPdf(filename) {
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
+    const logo = await imageDataUrl('assets/logo.png');
+    const records = gradesReport();
+    const BRAND = [15, 43, 51], ACCENT = [255, 130, 0], MUTED = [100, 116, 122];
+
+    const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const M = 36;
+
+    // Encabezado (solo en la primera página)
+    let y = M;
+    if (logo) {
+      const h = 34, w = h * logo.w / logo.h;
+      doc.addImage(logo.data, 'PNG', M, y, w, h);
+    }
+    doc.setFont('helvetica', 'bold').setFontSize(18).setTextColor(...BRAND);
+    doc.text('Reporte de calificaciones', pageW - M, y + 14, { align: 'right' });
+    doc.setFont('helvetica', 'normal').setFontSize(9).setTextColor(...MUTED);
+    doc.text(('Campus HDI · Generado el ' + UI.fmtDateTime(new Date().toISOString())).replace(/[   ]/g, ' '),
+      pageW - M, y + 30, { align: 'right' });
+    y += 46;
+    doc.setFillColor(...BRAND).rect(M, y, (pageW - 2 * M) * 0.7, 3, 'F');
+    doc.setFillColor(...ACCENT).rect(M + (pageW - 2 * M) * 0.7, y, (pageW - 2 * M) * 0.3, 3, 'F');
+    y += 16;
+
+    const examRows = records.filter(r => r.count);
+    const students = new Set(records.map(r => r.email)).size;
+    doc.setFontSize(9.5).setTextColor(...BRAND);
+    doc.text(`${students} estudiante(s) · ${new Set(examRows.map(r => r.email)).size} con intentos · ` +
+      `${examRows.reduce((s, r) => s + r.count, 0)} intento(s) · ${examRows.filter(r => r.cert).length} certificado(s)`, M, y);
+    y += 10;
+
+    // Las fuentes estándar de PDF no tienen los espacios finos que usa toLocaleString ("9:10 a. m.")
+    const txt = s => String(s).replace(/[   ]/g, ' ');
+    const body = records.map(r => [
+      r.name + '\n' + r.email, r.exam, String(r.count),
+      ...r.attempts.map(a => a ? a.grade + '\n' + a.date : '—'),
+      r.best || '—', r.status || '—', r.cert || '—'
+    ].map(txt));
+
+    doc.autoTable({
+      startY: y,
+      margin: { left: M, right: M, bottom: M + 10 },
+      head: [['Estudiante', 'Examen', 'Intentos',
+        ...Array.from({ length: MAX_ATTEMPTS }, (_, i) => `Intento ${i + 1}`), 'Mejor', 'Estado', 'Certificado']],
+      body: body.length ? body : [['No hay estudiantes registrados.', '', '', ...Array(MAX_ATTEMPTS).fill(''), '', '', '']],
+      theme: 'grid',
+      rowPageBreak: 'avoid',
+      styles: { font: 'helvetica', fontSize: 8, cellPadding: 4, textColor: [30, 41, 46], lineColor: [220, 228, 230], lineWidth: 0.5, valign: 'middle' },
+      headStyles: { fillColor: BRAND, textColor: 255, fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [241, 246, 247] },
+      columnStyles: {
+        0: { cellWidth: 150 }, 1: { cellWidth: 110 }, 2: { halign: 'center', cellWidth: 46 },
+        [3 + MAX_ATTEMPTS]: { halign: 'center', fontStyle: 'bold' }
+      },
+      didParseCell(d) {
+        if (d.section !== 'body') return;
+        const status = d.row.raw[4 + MAX_ATTEMPTS];
+        if (d.column.index === 4 + MAX_ATTEMPTS && status.startsWith('Aprobado')) d.cell.styles.textColor = [22, 128, 61];
+        if (d.column.index === 4 + MAX_ATTEMPTS && status.startsWith('No aprobado')) d.cell.styles.textColor = [185, 28, 28];
+      },
+      didDrawPage() {
+        doc.setFontSize(8).setTextColor(...MUTED);
+        doc.text('Grupo HDI · Campus de formación', M, pageH - M + 12);
+        doc.text('Página ' + doc.internal.getNumberOfPages(), pageW - M, pageH - M + 12, { align: 'right' });
+      }
+    });
+
+    doc.save(filename);
   }
 
   /** Genera y descarga un CSV a partir de filas (arreglos de celdas). */
@@ -1329,8 +1448,7 @@
               <td data-label="Acciones"><div class="btn-row">
                 <button class="btn btn-outline btn-sm" data-action="edit" data-id="${u.id}">Editar</button>
                 ${u.role === 'student' ? `<button class="btn btn-outline btn-sm" data-action="recordAttempt" data-id="${u.id}">Registrar evaluación</button>` : ''}
-                ${atts.some(a => a.userId === u.id) ? `<button class="btn btn-outline btn-sm" data-action="download" data-id="${u.id}">Descargar respuestas</button>
-                <button class="btn btn-outline btn-sm" data-action="resetAttempts" data-id="${u.id}">Reiniciar intentos</button>` : ''}
+                ${atts.some(a => a.userId === u.id) ? `<button class="btn btn-outline btn-sm" data-action="resetAttempts" data-id="${u.id}">Reiniciar intentos</button>` : ''}
                 <button class="btn btn-danger btn-sm" data-action="delete" data-id="${u.id}" ${u.id === me.id ? 'disabled title="No puedes eliminar tu propia cuenta"' : ''}>Eliminar</button>
               </div></td></tr>`).join('')}
           </tbody>
@@ -1435,12 +1553,6 @@
       }).then(v => {
         if (v === 'reset') { UI.toast('Intentos reiniciados', 'success'); render(); }
       });
-    };
-
-    actions.download = el => {
-      const u = users.find(x => x.id === el.dataset.id);
-      if (!u) return;
-      downloadAnswersCsv(atts.filter(a => a.userId === u.id), `respuestas-${slug(u.name)}-${today()}.csv`);
     };
 
     /** Elige el examen y abre el formulario para registrar una evaluación hecha por otro medio. */
