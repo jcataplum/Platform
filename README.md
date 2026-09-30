@@ -21,10 +21,10 @@ py -m http.server 5510
 - Máximo 3 intentos por examen; cada intento se conserva de forma individual.
 - Resultados con correctas, incorrectas, porcentaje, fecha/hora y número de intento.
 - Certificado con código único al obtener 90% o más (uno por usuario y examen), imprimible o guardable como PDF.
-- Panel administrativo: estadísticas, CRUD de exámenes (publicar/desactivar) y CRUD de usuarios.
+- Panel administrativo: Dashboard con indicadores, gráfica «Cumplimiento por módulo evaluado» (promedio de la mejor calificación de cada persona por examen, con la meta de 90 %) y rendimiento por examen; CRUD de exámenes (publicar/desactivar) y CRUD de usuarios.
 - Solo el administrador puede reiniciar los intentos de un estudiante en un examen (Usuarios → Reiniciar intentos). Los intentos anteriores no se borran: quedan anulados en la base de datos (`voided_at`, `voided_by`) como historial, y los certificados ya emitidos se conservan.
-- Reporte de calificaciones (Dashboard → al final, «Descargar reporte»), en Excel (CSV) o PDF, con todos los estudiantes, cada examen presentado, el número de intentos, la calificación y fecha de cada intento, la mejor calificación y el estado de certificación. Los estudiantes sin intentos también aparecen.
-- Descarga de respuestas en CSV (se abre en Excel) de todos los intentos, filtrables por examen (Dashboard → Resultados → Descargar respuestas). Incluye una fila por pregunta de cada intento, con la respuesta dada, la correcta y el resultado.
+- Pestaña «Resultados y Certificados» (admin): listado de personas con búsqueda y filtro; por persona, «Ver resultados» (resultados por módulo e historial de intentos, con acceso al detalle y a la edición) y «Ver certificados».
+- Descargas (en «Resultados y Certificados»): Excel (.xlsx) con tres hojas —resumen por persona, resultados por módulo con la calificación y fecha de cada intento, y detalle de respuestas— para todas las personas o solo una; y reporte de calificaciones en PDF. Las librerías de Excel (SheetJS) y PDF (jsPDF) se cargan desde cdnjs solo al descargar.
 - El administrador puede registrar evaluaciones presentadas por otro medio (Usuarios → Registrar evaluación) y editar las respuestas de cualquier intento finalizado (Editar, en los resultados). La nota y el certificado se recalculan en el servidor; los intentos registrados quedan marcados como «Manual» y toda edición guarda quién y cuándo (`manual`, `edited_at`, `edited_by`). Si una edición baja un intento certificado de 90 %, el certificado se retira (y se emite de nuevo si otro intento vigente lo supera).
 
 ## Arquitectura y seguridad

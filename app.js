@@ -183,6 +183,9 @@
     { re: /^#\/admin\/examenes$/, view: viewAdminExams, access: 'admin' },
     { re: /^#\/admin\/examen\/([\w-]+)$/, view: viewExamEditor, access: 'admin' },
     { re: /^#\/admin\/usuarios$/, view: viewAdminUsers, access: 'admin' },
+    { re: /^#\/admin\/resultados$/, view: viewAdminResults, access: 'admin' },
+    { re: /^#\/admin\/resultados\/([\w-]+)$/, view: viewAdminPersonResults, access: 'admin' },
+    { re: /^#\/admin\/certificados\/([\w-]+)$/, view: viewAdminPersonCerts, access: 'admin' },
     { re: /^#\/admin\/intento\/([\w-]+)$/, view: viewAdminAttemptEdit, access: 'admin' },
     { re: /^#\/admin\/registrar\/([\w-]+)\/([\w-]+)$/, view: viewAdminAttemptNew, access: 'admin' }
   ];
@@ -230,12 +233,13 @@
     if (!user) {
       links = [['#/login', 'Iniciar sesión'], ['#/registro', 'Registrarse']];
     } else if (user.role === 'admin') {
-      links = [['#/admin', 'Dashboard'], ['#/admin/examenes', 'Exámenes'], ['#/admin/usuarios', 'Usuarios']];
+      links = ADMIN_TABS;
     } else {
       links = [['#/panel', 'Mis exámenes'], ['#/resultados', 'Resultados'], ['#/certificados', 'Certificados']];
     }
     const isActive = h => hash === h || (h === '#/admin/examenes' && hash.startsWith('#/admin/examen/')) ||
-      (h === '#/admin/usuarios' && /^#\/admin\/(intento|registrar)\//.test(hash));
+      (h === '#/admin/usuarios' && /^#\/admin\/(intento|registrar)\//.test(hash)) ||
+      (h === '#/admin/resultados' && /^#\/(admin\/(resultados|certificados)\/|resultado\/|certificado\/)/.test(hash));
     $nav.innerHTML = links.map(([h, l]) =>
       `<a href="${h}" class="${isActive(h) ? 'active' : ''}" ${isActive(h) ? 'aria-current="page"' : ''}>${l}</a>`
     ).join('') + (user ? `
@@ -429,7 +433,8 @@
       </article>`;
   }
 
-  function historyTableHtml(atts, { showUser = false, users = [] } = {}) {
+  /** admin: muestra "Editar" en los finalizados y no ofrece continuar los intentos en curso. */
+  function historyTableHtml(atts, { showUser = false, users = [], admin = false } = {}) {
     if (!atts.length) return `<div class="table-wrap"><p class="empty">Aún no hay intentos registrados.</p></div>`;
     const userName = id => (users.find(u => u.id === id) || {}).name || 'Usuario eliminado';
     return `
@@ -451,9 +456,9 @@
                 <td data-label="Incorrectas">${done ? a.total - a.correctCount : '—'}</td>
                 <td data-label="Resultado">${done ? UI.badgeForPercent(a.percentage) : '<span class="badge badge-accent">En curso</span>'}</td>
                 <td data-label="">${done
-                  ? `<div class="btn-row"><a class="btn btn-outline btn-sm" href="#/resultado/${a.id}">Ver detalle</a>${showUser
+                  ? `<div class="btn-row"><a class="btn btn-outline btn-sm" href="#/resultado/${a.id}">Ver detalle</a>${admin
                     ? `<a class="btn btn-ghost btn-sm" href="#/admin/intento/${a.id}">Editar</a>` : ''}</div>`
-                  : (!showUser ? `<a class="btn btn-accent btn-sm" href="#/intento/${a.id}">Continuar</a>` : '')}</td>
+                  : (!admin ? `<a class="btn btn-accent btn-sm" href="#/intento/${a.id}">Continuar</a>` : '')}</td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -461,9 +466,9 @@
       </div>`;
   }
 
-  function certListHtml(certs) {
+  function certListHtml(certs, emptyMsg) {
     if (!certs.length) {
-      return `<div class="card"><p class="empty" style="padding:8px">Aún no tienes certificados. Obtén ${PASS_PERCENT}% o más en un examen para recibir uno.</p></div>`;
+      return `<div class="card"><p class="empty" style="padding:8px">${emptyMsg || `Aún no tienes certificados. Obtén ${PASS_PERCENT}% o más en un examen para recibir uno.`}</p></div>`;
     }
     return `<div class="grid grid-cards">${certs.map(c => `
       <article class="card exam-card">
@@ -693,7 +698,7 @@
     const used = Domain.attemptsFor(att.userId, att.examId).length;
     const reveal = user.role === 'admin' || used >= MAX_ATTEMPTS || !!cert;
     const passed = att.percentage >= PASS_PERCENT;
-    const back = user.role === 'admin' ? '#/admin' : '#/resultados';
+    const back = user.role === 'admin' ? '#/admin/resultados/' + att.userId : '#/resultados';
 
     $app.innerHTML = `
       <div class="page-head">
@@ -770,7 +775,7 @@
     const c = Store.certificates().find(x => x.id === certId);
     if (!c || (user.role !== 'admin' && c.userId !== user.id)) return renderNotFound(user);
     const owner = Store.users().find(u => u.id === c.userId);
-    const back = user.role === 'admin' ? '#/admin' : '#/certificados';
+    const back = user.role === 'admin' ? '#/admin/certificados/' + c.userId : '#/certificados';
 
     $app.innerHTML = `
       <div class="cert-actions">
@@ -802,12 +807,125 @@
   }
 
   /* =======================================================
+     Administración — navegación y métricas compartidas
+     ======================================================= */
+  const ADMIN_TABS = [
+    ['#/admin', 'Dashboard'], ['#/admin/examenes', 'Exámenes'], ['#/admin/usuarios', 'Usuarios'],
+    ['#/admin/resultados', 'Resultados y Certificados']
+  ];
+
+  function adminTabs(active) {
+    return `<nav class="tabs" aria-label="Secciones de administración">${ADMIN_TABS.map(([h, l]) =>
+      `<a href="${h}" class="${h === active ? 'active' : ''}">${l}</a>`).join('')}</nav>`;
+  }
+
+  function attemptGrade(a) {
+    return a.status === 'finished' ? a.percentage + '%' : 'En curso';
+  }
+
+  function attemptDate(a) {
+    return UI.fmtDateTime(a.status === 'finished' ? a.finishedAt : a.startedAt);
+  }
+
+  /** Resultados de una persona agrupados por módulo (examen), en orden alfabético. */
+  function moduleRows(userId) {
+    const certs = Store.certificates();
+    const examIds = Array.from(new Set(Store.attempts().filter(a => a.userId === userId).map(a => a.examId)));
+    return examIds.map(id => Domain.attemptsFor(userId, id))
+      .sort((a, b) => a[0].examTitle.localeCompare(b[0].examTitle, 'es'))
+      .map(list => {
+        const finished = list.filter(a => a.status === 'finished');
+        const cert = certs.find(c => c.userId === userId && c.examId === list[0].examId) || null;
+        const exhausted = list.length >= MAX_ATTEMPTS && !list.some(a => a.status === 'in_progress');
+        return {
+          examId: list[0].examId,
+          title: list[0].examTitle,
+          list,
+          count: list.length,
+          slots: Array.from({ length: MAX_ATTEMPTS }, (_, i) => list.find(a => a.number === i + 1) || null),
+          best: finished.length ? Math.max(...finished.map(a => a.percentage)) : null,
+          cert,
+          state: cert ? 'passed' : (exhausted ? 'failed' : 'progress'),
+          status: cert ? 'Aprobado (certificado)' : (exhausted ? 'No aprobado · sin intentos' : 'En proceso')
+        };
+      });
+  }
+
+  /** Una entrada por persona: estudiantes y cualquier usuario con intentos. */
+  function peopleSummary() {
+    const atts = Store.attempts();
+    const certs = Store.certificates();
+    return Store.users()
+      .filter(u => u.role === 'student' || atts.some(a => a.userId === u.id))
+      .sort((a, b) => a.name.localeCompare(b.name, 'es'))
+      .map(u => {
+        const mine = atts.filter(a => a.userId === u.id);
+        const modules = moduleRows(u.id);
+        const bests = modules.map(m => m.best).filter(v => v !== null);
+        const last = mine.reduce((acc, a) => {
+          const d = a.finishedAt || a.startedAt;
+          return d > acc ? d : acc;
+        }, '');
+        return {
+          user: u,
+          attempts: mine.length,
+          modules,
+          passed: modules.filter(m => m.cert).length,
+          avg: bests.length ? Math.round(bests.reduce((s, v) => s + v, 0) / bests.length) : null,
+          certs: certs.filter(c => c.userId === u.id),
+          last: last || null
+        };
+      });
+  }
+
+  /**
+   * Cumplimiento por módulo: promedio de la mejor calificación de cada persona
+   * en el examen (solo intentos finalizados y vigentes).
+   */
+  function moduleCompliance() {
+    const certs = Store.certificates();
+    const byExam = new Map();
+    Store.attempts().filter(a => a.status === 'finished').forEach(a => {
+      if (!byExam.has(a.examId)) byExam.set(a.examId, { examId: a.examId, title: a.examTitle, best: new Map() });
+      const g = byExam.get(a.examId);
+      g.best.set(a.userId, Math.max(g.best.get(a.userId) || 0, a.percentage));
+    });
+    return Array.from(byExam.values()).map(g => {
+      const exam = Domain.exam(g.examId);
+      const values = Array.from(g.best.values());
+      return {
+        title: exam ? exam.title : g.title,
+        people: values.length,
+        certified: certs.filter(c => c.examId === g.examId).length,
+        pct: Math.round(values.reduce((s, v) => s + v, 0) / values.length)
+      };
+    }).sort((a, b) => b.pct - a.pct || a.title.localeCompare(b.title, 'es'));
+  }
+
+  /* =======================================================
      Administración — dashboard
      ======================================================= */
-  function adminTabs(active) {
-    const tabs = [['#/admin', 'Dashboard'], ['#/admin/examenes', 'Exámenes'], ['#/admin/usuarios', 'Usuarios']];
-    return `<nav class="tabs" aria-label="Secciones de administración">${tabs.map(([h, l]) =>
-      `<a href="${h}" class="${h === active ? 'active' : ''}">${l}</a>`).join('')}</nav>`;
+  function complianceChartHtml(rows) {
+    if (!rows.length) return '<div class="card"><p class="empty">Aún no hay evaluaciones finalizadas.</p></div>';
+    return `
+      <div class="card">
+        <ul class="bar-chart" aria-label="Cumplimiento por módulo evaluado">
+          ${rows.map(r => {
+            const tip = `${r.title}: ${r.pct}% de cumplimiento · ${r.people} persona(s) evaluada(s) · ${r.certified} certificada(s)`;
+            return `
+              <li class="bar-row" title="${UI.esc(tip)}" aria-label="${UI.esc(tip)}">
+                <span class="bar-label">${UI.esc(r.title)}<small>${r.people} persona(s) · ${r.certified} certificada(s)</small></span>
+                <span class="bar-track" aria-hidden="true">
+                  <span class="bar-fill" style="width:${r.pct}%"></span>
+                  <span class="bar-goal" style="left:${PASS_PERCENT}%"></span>
+                </span>
+                <span class="bar-value" aria-hidden="true">${r.pct}%</span>
+              </li>`;
+          }).join('')}
+        </ul>
+        <p class="bar-note small muted"><span class="bar-goal-key" aria-hidden="true"></span>
+          Meta de aprobación: ${PASS_PERCENT}%. El cumplimiento es el promedio de la mejor calificación de cada persona en el módulo.</p>
+      </div>`;
   }
 
   function viewAdminDashboard() {
@@ -818,7 +936,6 @@
     const certs = Store.certificates();
     const avg = finished.length ? Math.round(finished.reduce((s, a) => s + a.percentage, 0) / finished.length) : 0;
     const passed = finished.filter(a => a.percentage >= PASS_PERCENT).length;
-    const examIds = Array.from(new Set(atts.map(a => a.examId)));
 
     const perExam = exams.map(e => {
       const f = finished.filter(a => a.examId === e.id);
@@ -845,6 +962,11 @@
       </div>
 
       <section class="section">
+        <div class="section-title"><h2>Cumplimiento por módulo evaluado</h2></div>
+        ${complianceChartHtml(moduleCompliance())}
+      </section>
+
+      <section class="section">
         <div class="section-title"><h2>Rendimiento por examen</h2></div>
         <div class="table-wrap">
           <table class="table-responsive">
@@ -859,80 +981,166 @@
               : '<tr><td colspan="6" class="empty">No hay exámenes.</td></tr>'}</tbody>
           </table>
         </div>
-      </section>
-
-      <section class="section">
-        <div class="section-title">
-          <h2>Resultados</h2>
-          <div class="btn-row">
-            <label class="small" style="display:flex;gap:8px;align-items:center">Filtrar
-              <select class="input" id="examFilter" style="width:auto">
-                <option value="">Todos los exámenes</option>
-                ${examIds.map(id => {
-                  const a = atts.find(x => x.examId === id);
-                  return `<option value="${id}">${UI.esc(a.examTitle)}</option>`;
-                }).join('')}
-              </select>
-            </label>
-            <button type="button" class="btn btn-outline btn-sm" data-action="download" ${atts.length ? '' : 'disabled'}>Descargar respuestas (Excel)</button>
-          </div>
-        </div>
-        <div id="resultsTable"></div>
-      </section>
-
-      <section class="section">
-        <div class="section-title"><h2>Certificados emitidos</h2></div>
-        <div class="table-wrap">
-          <table class="table-responsive">
-            <thead><tr><th>Código</th><th>Estudiante</th><th>Examen</th><th>Puntaje</th><th>Fecha</th><th></th></tr></thead>
-            <tbody>${certs.length ? certs.slice().reverse().map(c => `<tr>
-              <td data-label="Código"><code>${UI.esc(c.code)}</code></td>
-              <td data-label="Estudiante">${UI.esc((users.find(u => u.id === c.userId) || {}).name || c.userName)}</td>
-              <td data-label="Examen">${UI.esc(c.examTitle)}</td>
-              <td data-label="Puntaje">${c.percentage}%</td>
-              <td data-label="Fecha">${UI.fmtDate(c.issuedAt)}</td>
-              <td data-label=""><a class="btn btn-outline btn-sm" href="#/certificado/${c.id}">Ver</a></td></tr>`).join('')
-              : '<tr><td colspan="6" class="empty">Aún no se han emitido certificados.</td></tr>'}</tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="section-title"><h2>Reporte de calificaciones</h2></div>
-        <div class="card" style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between">
-          <p class="muted" style="margin:0;max-width:640px">Descarga el listado de todos los estudiantes con cada examen presentado, el número de intentos realizados y la calificación y fecha de cada intento, la mejor calificación y el estado de certificación, en Excel o en PDF.</p>
-          <div class="btn-row">
-            <button type="button" class="btn btn-accent" data-action="downloadGrades">Descargar reporte (Excel)</button>
-            <button type="button" class="btn btn-primary" data-action="downloadGradesPdf">Descargar reporte (PDF)</button>
-          </div>
-        </div>
       </section>`;
-
-    const drawResults = () => {
-      const f = document.getElementById('examFilter').value;
-      const list = atts.filter(a => !f || a.examId === f)
-        .sort((a, b) => (b.finishedAt || b.startedAt).localeCompare(a.finishedAt || a.startedAt));
-      document.getElementById('resultsTable').innerHTML = historyTableHtml(list, { showUser: true, users });
-    };
-    document.getElementById('examFilter').addEventListener('change', drawResults);
-    drawResults();
-
-    actions.download = () => {
-      const f = document.getElementById('examFilter').value;
-      const list = atts.filter(a => !f || a.examId === f);
-      const title = f ? list[0].examTitle : 'todos';
-      downloadAnswersCsv(list, `respuestas-${slug(title)}-${today()}.csv`);
-    };
-    actions.downloadGrades = () => downloadGradesCsv(`reporte-calificaciones-${today()}.csv`);
-    actions.downloadGradesPdf = el => UI.run(el, () => downloadGradesPdf(`reporte-calificaciones-${today()}.pdf`));
   }
 
   /* =======================================================
-     Exportación de respuestas (CSV compatible con Excel)
+     Administración — resultados y certificados
      ======================================================= */
+  function stateBadge(m) {
+    if (m.state === 'passed') return '<span class="badge badge-success">Aprobado</span>';
+    if (m.state === 'failed') return '<span class="badge badge-danger">No aprobado</span>';
+    return '<span class="badge badge-accent">En proceso</span>';
+  }
+
+  /** Quita tildes y mayúsculas para buscar */
+  function fold(s) {
+    return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  }
+
+  function viewAdminResults() {
+    const people = peopleSummary();
+
+    $app.innerHTML = `
+      <div class="page-head">
+        <div><p class="eyebrow">Panel administrativo</p><h1>Resultados y Certificados</h1>
+        <p class="muted">Consulta los resultados y certificados de cada persona evaluada.</p></div>
+        <div class="btn-row">
+          <button type="button" class="btn btn-accent" data-action="xlsx">Descargar Excel</button>
+          <button type="button" class="btn btn-outline" data-action="pdf">Descargar PDF</button>
+        </div>
+      </div>
+      ${adminTabs('#/admin/resultados')}
+      <div class="toolbar">
+        <input class="input" id="pSearch" type="search" placeholder="Buscar por nombre o correo" aria-label="Buscar persona">
+        <select class="input" id="pFilter" aria-label="Personas a mostrar">
+          <option value="evaluated">Personas evaluadas</option>
+          <option value="all">Todas las personas</option>
+          <option value="none">Sin evaluaciones</option>
+        </select>
+      </div>
+      <div id="pTable"></div>
+      <p class="small muted">El Excel trae tres hojas: resumen por persona, resultados por módulo y detalle de respuestas.</p>`;
+
+    const draw = () => {
+      const q = fold(document.getElementById('pSearch').value.trim());
+      const f = document.getElementById('pFilter').value;
+      const list = people.filter(p =>
+        (f === 'all' || (f === 'evaluated' ? p.attempts > 0 : p.attempts === 0)) &&
+        (!q || fold(p.user.name).includes(q) || fold(p.user.email).includes(q)));
+
+      document.getElementById('pTable').innerHTML = `
+        <div class="table-wrap">
+          <table class="table-responsive">
+            <thead><tr><th>Nombre</th><th>Correo</th><th>Módulos evaluados</th><th>Intentos</th><th>Promedio</th><th>Certificados</th><th>Acciones</th></tr></thead>
+            <tbody>${list.length ? list.map(p => `<tr>
+              <td data-label="Nombre"><strong>${UI.esc(p.user.name)}</strong></td>
+              <td data-label="Correo">${UI.esc(p.user.email)}</td>
+              <td data-label="Módulos evaluados"><span>${p.modules.length}${p.modules.length ? ` <span class="small muted">(${p.passed} aprobado${p.passed === 1 ? '' : 's'})</span>` : ''}</span></td>
+              <td data-label="Intentos">${p.attempts}</td>
+              <td data-label="Promedio">${p.avg === null ? '—' : UI.badgeForPercent(p.avg)}</td>
+              <td data-label="Certificados">${p.certs.length}</td>
+              <td data-label="Acciones"><div class="btn-row">
+                ${p.attempts
+                  ? `<a class="btn btn-primary btn-sm" href="#/admin/resultados/${p.user.id}">Ver resultados</a>`
+                  : '<button type="button" class="btn btn-primary btn-sm" disabled title="Sin evaluaciones">Ver resultados</button>'}
+                <a class="btn btn-outline btn-sm" href="#/admin/certificados/${p.user.id}">Ver certificados</a>
+              </div></td></tr>`).join('')
+              : '<tr><td colspan="7" class="empty">No hay personas que coincidan.</td></tr>'}</tbody>
+          </table>
+        </div>`;
+    };
+    document.getElementById('pSearch').addEventListener('input', draw);
+    document.getElementById('pFilter').addEventListener('change', draw);
+    draw();
+
+    actions.xlsx = el => UI.run(el, () => downloadResultsXlsx(null, `resultados-y-certificados-${today()}.xlsx`));
+    actions.pdf = el => UI.run(el, () => downloadGradesPdf(`reporte-calificaciones-${today()}.pdf`));
+  }
+
+  function moduleTableHtml(modules) {
+    if (!modules.length) return '<div class="table-wrap"><p class="empty">Esta persona aún no tiene evaluaciones.</p></div>';
+    return `
+      <div class="table-wrap">
+        <table class="table-responsive">
+          <thead><tr><th>Módulo</th><th>Intentos</th>
+            ${Array.from({ length: MAX_ATTEMPTS }, (_, i) => `<th>Intento ${i + 1}</th>`).join('')}
+            <th>Mejor</th><th>Estado</th><th>Certificado</th></tr></thead>
+          <tbody>${modules.map(m => `<tr>
+            <td data-label="Módulo"><strong>${UI.esc(m.title)}</strong></td>
+            <td data-label="Intentos">${m.count}/${MAX_ATTEMPTS}</td>
+            ${m.slots.map((a, i) => `<td data-label="Intento ${i + 1}">${!a ? '—'
+              : a.status === 'finished'
+                ? `<span><a href="#/resultado/${a.id}" title="Ver detalle">${UI.badgeForPercent(a.percentage)}</a>${a.manual ? ' <span class="small muted">manual</span>' : ''}</span>`
+                : '<span class="badge badge-accent">En curso</span>'}</td>`).join('')}
+            <td data-label="Mejor">${m.best === null ? '—' : `<strong>${m.best}%</strong>`}</td>
+            <td data-label="Estado">${stateBadge(m)}</td>
+            <td data-label="Certificado">${m.cert ? `<a class="btn btn-outline btn-sm" href="#/certificado/${m.cert.id}">${UI.esc(m.cert.code)}</a>` : '—'}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>`;
+  }
+
+  function viewAdminPersonResults(me, userId) {
+    const u = Store.users().find(x => x.id === userId);
+    if (!u) return renderNotFound(me);
+    const modules = moduleRows(userId);
+    const atts = Store.attempts().filter(a => a.userId === userId)
+      .sort((a, b) => (b.finishedAt || b.startedAt).localeCompare(a.finishedAt || a.startedAt));
+    const certCount = Store.certificates().filter(c => c.userId === userId).length;
+
+    $app.innerHTML = `
+      <div class="page-head">
+        <div><p class="eyebrow">Resultados y Certificados · Resultados</p><h1>${UI.esc(u.name)}</h1>
+        <p class="muted">${UI.esc(u.email)}</p></div>
+        <div class="btn-row">
+          <a class="btn btn-outline btn-sm" href="#/admin/certificados/${u.id}">Ver certificados (${certCount})</a>
+          <button type="button" class="btn btn-accent btn-sm" data-action="xlsx" ${atts.length ? '' : 'disabled'}>Descargar Excel</button>
+          <a class="btn btn-outline btn-sm" href="#/admin/resultados">&larr; Volver</a>
+        </div>
+      </div>
+      ${adminTabs('#/admin/resultados')}
+      <section class="section">
+        <div class="section-title"><h2>Resultados por módulo</h2></div>
+        ${moduleTableHtml(modules)}
+      </section>
+      <section class="section">
+        <div class="section-title"><h2>Historial de intentos</h2></div>
+        ${historyTableHtml(atts, { admin: true })}
+      </section>`;
+
+    actions.xlsx = el => UI.run(el, () => downloadResultsXlsx(userId, `resultados-${slug(u.name)}-${today()}.xlsx`));
+  }
+
+  function viewAdminPersonCerts(me, userId) {
+    const u = Store.users().find(x => x.id === userId);
+    if (!u) return renderNotFound(me);
+    const certs = Store.certificates().filter(c => c.userId === userId);
+    const hasAttempts = Store.attempts().some(a => a.userId === userId);
+
+    $app.innerHTML = `
+      <div class="page-head">
+        <div><p class="eyebrow">Resultados y Certificados · Certificados</p><h1>${UI.esc(u.name)}</h1>
+        <p class="muted">${UI.esc(u.email)}</p></div>
+        <div class="btn-row">
+          ${hasAttempts ? `<a class="btn btn-outline btn-sm" href="#/admin/resultados/${u.id}">Ver resultados</a>` : ''}
+          <a class="btn btn-outline btn-sm" href="#/admin/resultados">&larr; Volver</a>
+        </div>
+      </div>
+      ${adminTabs('#/admin/resultados')}
+      ${certListHtml(certs, 'Esta persona aún no tiene certificados.')}`;
+  }
+
+  /* =======================================================
+     Exportación: Excel (.xlsx) y PDF. Las librerías se cargan
+     desde el CDN solo cuando se usan.
+     ======================================================= */
+  const XLSX_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+  const JSPDF_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+  const AUTOTABLE_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
+
   function slug(s) {
-    return String(s).normalize('NFD').replace(/[̀-ͯ]/g, '')
-      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'archivo';
+    return fold(s).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'archivo';
   }
 
   function today() {
@@ -940,103 +1148,6 @@
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
 
-  /** Una fila por pregunta de cada intento, con el resumen del intento repetido para filtrar en Excel. */
-  function downloadAnswersCsv(atts, filename) {
-    const users = Store.users();
-    const certs = Store.certificates();
-    const optText = (q, ids) => (ids || []).map(id => (q.options.find(o => o.id === id) || {}).text || id).join(' | ');
-    const sorted = atts.slice().sort((a, b) => {
-      const ua = (users.find(u => u.id === a.userId) || {}).name || '';
-      const ub = (users.find(u => u.id === b.userId) || {}).name || '';
-      return ua.localeCompare(ub, 'es') || a.examTitle.localeCompare(b.examTitle, 'es') || a.number - b.number;
-    });
-
-    const rows = [[
-      'Estudiante', 'Correo', 'Examen', 'Intento', 'Estado', 'Origen', 'Fecha inicio', 'Fecha finalización',
-      'Correctas', 'Total preguntas', 'Porcentaje', 'Certificado', 'N° pregunta', 'Pregunta', 'Tipo',
-      'Respuesta del estudiante', 'Respuesta correcta', 'Resultado'
-    ]];
-    sorted.forEach(a => {
-      const u = users.find(x => x.id === a.userId);
-      const done = a.status === 'finished';
-      const cert = certs.find(c => c.attemptId === a.id);
-      const head = [
-        u ? u.name : 'Usuario eliminado', u ? u.email : '', a.examTitle, a.number,
-        done ? 'Finalizado' : 'En curso',
-        a.manual ? 'Registrado por administrador' : (a.editedAt ? 'Plataforma (editado)' : 'Plataforma'),
-        UI.fmtDateTime(a.startedAt), done ? UI.fmtDateTime(a.finishedAt) : '',
-        done ? a.correctCount : '', a.total, done ? a.percentage + '%' : '', cert ? cert.code : ''
-      ];
-      a.questionsSnapshot.forEach((q, k) => {
-        const sel = a.answers[q.id] || [];
-        rows.push(head.concat([
-          k + 1, q.text, q.type === 'multiple' ? 'Selección múltiple' : 'Selección única',
-          sel.length ? optText(q, sel) : 'Sin responder', optText(q, q.correct),
-          !done && !sel.length ? '' : (Domain.isCorrect(q, sel) ? 'Correcta' : 'Incorrecta')
-        ]));
-      });
-    });
-    downloadCsv(rows, filename);
-  }
-
-  /**
-   * Resumen de calificaciones: una fila por estudiante y examen con cada intento.
-   * Los estudiantes sin intentos también aparecen, para tener el listado completo.
-   */
-  function gradesReport() {
-    const users = Store.users().filter(u => u.role === 'student' || Store.attempts().some(a => a.userId === u.id))
-      .sort((a, b) => a.name.localeCompare(b.name, 'es'));
-    const atts = Store.attempts();
-    const certs = Store.certificates();
-    const records = [];
-
-    users.forEach(u => {
-      const examIds = Array.from(new Set(atts.filter(a => a.userId === u.id).map(a => a.examId)));
-      if (!examIds.length) {
-        records.push({ name: u.name, email: u.email, exam: 'Sin intentos', count: 0,
-          attempts: Array(MAX_ATTEMPTS).fill(null), best: '', status: '', cert: '' });
-        return;
-      }
-      examIds.map(id => Domain.attemptsFor(u.id, id))
-        .sort((a, b) => a[0].examTitle.localeCompare(b[0].examTitle, 'es'))
-        .forEach(list => {
-          const finished = list.filter(a => a.status === 'finished');
-          const best = finished.length ? Math.max(...finished.map(a => a.percentage)) : null;
-          const cert = certs.find(c => c.userId === u.id && c.examId === list[0].examId);
-          records.push({
-            name: u.name, email: u.email, exam: list[0].examTitle, count: list.length,
-            attempts: Array.from({ length: MAX_ATTEMPTS }, (_, i) => {
-              const a = list.find(x => x.number === i + 1);
-              return a ? {
-                grade: (a.status === 'finished' ? a.percentage + '%' : 'En curso') + (a.manual ? ' (manual)' : ''),
-                date: UI.fmtDateTime(a.status === 'finished' ? a.finishedAt : a.startedAt)
-              } : null;
-            }),
-            best: best === null ? '' : best + '%',
-            status: cert ? 'Aprobado (certificado)'
-              : (list.length >= MAX_ATTEMPTS && !list.some(a => a.status === 'in_progress') ? 'No aprobado · sin intentos' : 'En proceso'),
-            cert: cert ? cert.code : ''
-          });
-        });
-    });
-    return records;
-  }
-
-  function downloadGradesCsv(filename) {
-    const rows = [[
-      'Estudiante', 'Correo', 'Examen', 'Intentos realizados',
-      ...Array.from({ length: MAX_ATTEMPTS }, (_, i) => [`Calificación intento ${i + 1}`, `Fecha intento ${i + 1}`]).flat(),
-      'Mejor calificación', 'Estado', 'Código certificado'
-    ]];
-    gradesReport().forEach(r => rows.push([
-      r.name, r.email, r.exam, r.count,
-      ...r.attempts.flatMap(a => a ? [a.grade, a.date] : ['', '']),
-      r.best, r.status, r.cert
-    ]));
-    downloadCsv(rows, filename);
-  }
-
-  /** Carga un script una sola vez (las librerías de PDF solo se descargan al usarlas). */
   const loadedScripts = {};
   function loadScript(src) {
     if (!loadedScripts[src]) {
@@ -1044,11 +1155,117 @@
         const s = document.createElement('script');
         s.src = src;
         s.onload = resolve;
-        s.onerror = () => { delete loadedScripts[src]; reject(new Error('No se pudo cargar el generador de PDF. Revisa tu conexión.')); };
+        s.onerror = () => { delete loadedScripts[src]; s.remove(); reject(new Error('No se pudo preparar la descarga. Revisa tu conexión.')); };
         document.head.appendChild(s);
       });
     }
     return loadedScripts[src];
+  }
+
+  /** Hoja con anchos de columna y autofiltro. pctCols: columnas con 0–100 que se guardan como porcentaje. */
+  function xlsxSheet(rows, widths, pctCols = []) {
+    const X = window.XLSX;
+    const ws = X.utils.aoa_to_sheet(rows);
+    const range = X.utils.decode_range(ws['!ref']);
+    for (let r = 1; r <= range.e.r; r++) {
+      pctCols.forEach(c => {
+        const cell = ws[X.utils.encode_cell({ r, c })];
+        if (cell && cell.t === 'n') { cell.v /= 100; cell.z = '0%'; }
+      });
+    }
+    ws['!cols'] = widths.map(wch => ({ wch }));
+    ws['!autofilter'] = { ref: ws['!ref'] };
+    return ws;
+  }
+
+  function summarySheetRows(people) {
+    const rows = [['Nombre', 'Correo', 'Módulos evaluados', 'Módulos aprobados', 'Intentos realizados',
+      'Promedio (mejor calificación por módulo)', 'Certificados', 'Códigos de certificado', 'Último intento']];
+    people.forEach(p => rows.push([
+      p.user.name, p.user.email, p.modules.length, p.passed, p.attempts,
+      p.avg === null ? '' : p.avg, p.certs.length, p.certs.map(c => c.code).join(', '),
+      p.last ? UI.fmtDateTime(p.last) : 'Sin evaluaciones'
+    ]));
+    return rows;
+  }
+
+  function moduleSheetRows(people) {
+    const rows = [[
+      'Nombre', 'Correo', 'Módulo', 'Intentos realizados',
+      ...Array.from({ length: MAX_ATTEMPTS }, (_, i) => [`Calificación intento ${i + 1}`, `Fecha intento ${i + 1}`]).flat(),
+      'Mejor calificación', 'Estado', 'Código certificado', 'Observaciones'
+    ]];
+    people.forEach(p => {
+      if (!p.modules.length) {
+        rows.push([p.user.name, p.user.email, 'Sin evaluaciones', 0, ...Array(MAX_ATTEMPTS * 2).fill(''), '', '', '', '']);
+        return;
+      }
+      p.modules.forEach(m => rows.push([
+        p.user.name, p.user.email, m.title, m.count,
+        ...m.slots.flatMap(a => a ? [a.status === 'finished' ? a.percentage : 'En curso', attemptDate(a)] : ['', '']),
+        m.best === null ? '' : m.best, m.status, m.cert ? m.cert.code : '',
+        m.list.filter(a => a.manual || a.editedAt)
+          .map(a => `Intento ${a.number} ${a.manual ? 'registrado' : 'editado'} por administrador`).join('; ')
+      ]));
+    });
+    return rows;
+  }
+
+  /** Una fila por pregunta de cada intento, con el resumen del intento repetido para filtrar. */
+  function answerSheetRows(atts) {
+    const users = Store.users();
+    const certs = Store.certificates();
+    const userName = id => (users.find(u => u.id === id) || {}).name || '';
+    const optText = (q, ids) => (ids || []).map(id => (q.options.find(o => o.id === id) || {}).text || id).join(' | ');
+    const rows = [[
+      'Nombre', 'Correo', 'Módulo', 'Intento', 'Estado', 'Origen', 'Fecha inicio', 'Fecha finalización',
+      'Correctas', 'Total preguntas', 'Calificación', 'Certificado', 'N° pregunta', 'Pregunta', 'Tipo',
+      'Respuesta de la persona', 'Respuesta correcta', 'Resultado'
+    ]];
+    atts.slice()
+      .sort((a, b) => userName(a.userId).localeCompare(userName(b.userId), 'es') ||
+        a.examTitle.localeCompare(b.examTitle, 'es') || a.number - b.number)
+      .forEach(a => {
+        const u = users.find(x => x.id === a.userId);
+        const done = a.status === 'finished';
+        const cert = certs.find(c => c.attemptId === a.id);
+        const head = [
+          u ? u.name : 'Usuario eliminado', u ? u.email : '', a.examTitle, a.number,
+          done ? 'Finalizado' : 'En curso',
+          a.manual ? 'Registrado por administrador' : (a.editedAt ? 'Plataforma (editado)' : 'Plataforma'),
+          UI.fmtDateTime(a.startedAt), done ? UI.fmtDateTime(a.finishedAt) : '',
+          done ? a.correctCount : '', a.total, done ? a.percentage : '', cert ? cert.code : ''
+        ];
+        a.questionsSnapshot.forEach((q, k) => {
+          const sel = a.answers[q.id] || [];
+          rows.push(head.concat([
+            k + 1, q.text, q.type === 'multiple' ? 'Selección múltiple' : 'Selección única',
+            sel.length ? optText(q, sel) : 'Sin responder', optText(q, q.correct),
+            !done && !sel.length ? '' : (Domain.isCorrect(q, sel) ? 'Correcta' : 'Incorrecta')
+          ]));
+        });
+      });
+    return rows;
+  }
+
+  /** Libro de Excel con resumen por persona, resultados por módulo y detalle. userId = null → todas. */
+  async function downloadResultsXlsx(userId, filename) {
+    await loadScript(XLSX_SRC);
+    const X = window.XLSX;
+    const people = peopleSummary().filter(p => !userId || p.user.id === userId);
+    const atts = Store.attempts().filter(a => !userId || a.userId === userId);
+    const attemptPct = Array.from({ length: MAX_ATTEMPTS }, (_, i) => 4 + i * 2);
+
+    const wb = X.utils.book_new();
+    X.utils.book_append_sheet(wb, xlsxSheet(summarySheetRows(people), [30, 32, 12, 12, 12, 16, 12, 28, 22], [5]),
+      'Resumen por persona');
+    X.utils.book_append_sheet(wb, xlsxSheet(moduleSheetRows(people),
+      [30, 32, 32, 12, ...attemptPct.flatMap(() => [14, 22]), 14, 26, 18, 40], [...attemptPct, 4 + MAX_ATTEMPTS * 2]),
+      'Resultados por módulo');
+    X.utils.book_append_sheet(wb, xlsxSheet(answerSheetRows(atts),
+      [30, 32, 32, 9, 12, 26, 22, 22, 10, 10, 12, 18, 10, 60, 18, 40, 40, 12], [10]),
+      'Detalle de respuestas');
+    X.writeFile(wb, filename);
   }
 
   function imageDataUrl(src) {
@@ -1067,11 +1284,13 @@
   }
 
   async function downloadGradesPdf(filename) {
-    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
-    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js');
+    await loadScript(JSPDF_SRC);
+    await loadScript(AUTOTABLE_SRC);
     const logo = await imageDataUrl('assets/logo.png');
-    const records = gradesReport();
+    const people = peopleSummary();
     const BRAND = [15, 43, 51], ACCENT = [255, 130, 0], MUTED = [100, 116, 122];
+    // Las fuentes estándar de PDF no tienen los espacios finos que usa toLocaleString ("9:10 a. m.")
+    const txt = s => String(s).replace(/[   ]/g, ' ');
 
     const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' });
     const pageW = doc.internal.pageSize.getWidth();
@@ -1087,34 +1306,39 @@
     doc.setFont('helvetica', 'bold').setFontSize(18).setTextColor(...BRAND);
     doc.text('Reporte de calificaciones', pageW - M, y + 14, { align: 'right' });
     doc.setFont('helvetica', 'normal').setFontSize(9).setTextColor(...MUTED);
-    doc.text(('Campus HDI · Generado el ' + UI.fmtDateTime(new Date().toISOString())).replace(/[   ]/g, ' '),
-      pageW - M, y + 30, { align: 'right' });
+    doc.text(txt('Campus HDI · Generado el ' + UI.fmtDateTime(new Date().toISOString())), pageW - M, y + 30, { align: 'right' });
     y += 46;
     doc.setFillColor(...BRAND).rect(M, y, (pageW - 2 * M) * 0.7, 3, 'F');
     doc.setFillColor(...ACCENT).rect(M + (pageW - 2 * M) * 0.7, y, (pageW - 2 * M) * 0.3, 3, 'F');
     y += 16;
 
-    const examRows = records.filter(r => r.count);
-    const students = new Set(records.map(r => r.email)).size;
     doc.setFontSize(9.5).setTextColor(...BRAND);
-    doc.text(`${students} estudiante(s) · ${new Set(examRows.map(r => r.email)).size} con intentos · ` +
-      `${examRows.reduce((s, r) => s + r.count, 0)} intento(s) · ${examRows.filter(r => r.cert).length} certificado(s)`, M, y);
+    doc.text(`${people.length} persona(s) · ${people.filter(p => p.attempts).length} evaluada(s) · ` +
+      `${people.reduce((s, p) => s + p.attempts, 0)} intento(s) · ${people.reduce((s, p) => s + p.passed, 0)} certificado(s)`, M, y);
     y += 10;
 
-    // Las fuentes estándar de PDF no tienen los espacios finos que usa toLocaleString ("9:10 a. m.")
-    const txt = s => String(s).replace(/[   ]/g, ' ');
-    const body = records.map(r => [
-      r.name + '\n' + r.email, r.exam, String(r.count),
-      ...r.attempts.map(a => a ? a.grade + '\n' + a.date : '—'),
-      r.best || '—', r.status || '—', r.cert || '—'
-    ].map(txt));
+    const body = [];
+    people.forEach(p => {
+      const who = p.user.name + '\n' + p.user.email;
+      if (!p.modules.length) {
+        body.push([who, 'Sin evaluaciones', '0', ...Array(MAX_ATTEMPTS).fill('—'), '—', '—', '—']);
+        return;
+      }
+      p.modules.forEach(m => body.push([
+        who, m.title, String(m.count),
+        ...m.slots.map(a => a ? attemptGrade(a) + (a.manual ? ' (manual)' : '') + '\n' + attemptDate(a) : '—'),
+        m.best === null ? '—' : m.best + '%', m.status, m.cert ? m.cert.code : '—'
+      ]));
+    });
 
+    const STATUS_COL = 4 + MAX_ATTEMPTS;
     doc.autoTable({
       startY: y,
       margin: { left: M, right: M, bottom: M + 10 },
-      head: [['Estudiante', 'Examen', 'Intentos',
+      head: [['Persona', 'Módulo', 'Intentos',
         ...Array.from({ length: MAX_ATTEMPTS }, (_, i) => `Intento ${i + 1}`), 'Mejor', 'Estado', 'Certificado']],
-      body: body.length ? body : [['No hay estudiantes registrados.', '', '', ...Array(MAX_ATTEMPTS).fill(''), '', '', '']],
+      body: (body.length ? body : [['No hay personas registradas.', '', '', ...Array(MAX_ATTEMPTS).fill(''), '', '', '']])
+        .map(r => r.map(txt)),
       theme: 'grid',
       rowPageBreak: 'avoid',
       styles: { font: 'helvetica', fontSize: 8, cellPadding: 4, textColor: [30, 41, 46], lineColor: [220, 228, 230], lineWidth: 0.5, valign: 'middle' },
@@ -1125,10 +1349,10 @@
         [3 + MAX_ATTEMPTS]: { halign: 'center', fontStyle: 'bold' }
       },
       didParseCell(d) {
-        if (d.section !== 'body') return;
-        const status = d.row.raw[4 + MAX_ATTEMPTS];
-        if (d.column.index === 4 + MAX_ATTEMPTS && status.startsWith('Aprobado')) d.cell.styles.textColor = [22, 128, 61];
-        if (d.column.index === 4 + MAX_ATTEMPTS && status.startsWith('No aprobado')) d.cell.styles.textColor = [185, 28, 28];
+        if (d.section !== 'body' || d.column.index !== STATUS_COL) return;
+        const status = String(d.row.raw[STATUS_COL]);
+        if (status.startsWith('Aprobado')) d.cell.styles.textColor = [22, 128, 61];
+        if (status.startsWith('No aprobado')) d.cell.styles.textColor = [185, 28, 28];
       },
       didDrawPage() {
         doc.setFontSize(8).setTextColor(...MUTED);
@@ -1138,25 +1362,6 @@
     });
 
     doc.save(filename);
-  }
-
-  /** Genera y descarga un CSV a partir de filas (arreglos de celdas). */
-  function downloadCsv(rows, filename) {
-    // Punto y coma y BOM: Excel en español lo abre en columnas y con tildes correctas
-    const cell = v => {
-      let s = String(v == null ? '' : v);
-      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // evita que Excel lo interprete como fórmula
-      return /[";\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-    };
-    const csv = '﻿' + rows.map(r => r.map(cell).join(';')).join('\r\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   /* =======================================================
@@ -1616,7 +1821,7 @@
         <section class="card" style="max-width:560px;margin:40px auto;text-align:center">
           <h1>Intento en curso</h1>
           <p class="muted">El estudiante está presentando este intento. Podrás editarlo cuando lo finalice.</p>
-          <a class="btn btn-primary" href="#/admin">Volver</a>
+          <a class="btn btn-primary" href="#/admin/resultados/${att.userId}">Volver</a>
         </section>`;
       return;
     }

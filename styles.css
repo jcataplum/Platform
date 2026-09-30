@@ -367,6 +367,28 @@ td .btn-row { flex-wrap: nowrap; }
 .tabs a { padding: 10px 14px; text-decoration: none; color: var(--muted); font-weight: 600; border-bottom: 3px solid transparent; margin-bottom: -1px; }
 .tabs a.active { color: var(--brand); border-bottom-color: var(--accent); }
 
+/* ---------- Barra de búsqueda / filtros ---------- */
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.toolbar .input { flex: 1 1 240px; width: auto; }
+.toolbar select.input { flex: 0 1 220px; }
+
+/* ---------- Gráfica de barras horizontales ---------- */
+.bar-chart { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.bar-row { display: grid; grid-template-columns: minmax(140px, 32%) 1fr 48px; gap: 12px; align-items: center; }
+.bar-label { font-weight: 600; font-size: .92rem; color: var(--text); overflow-wrap: anywhere; }
+.bar-label small { display: block; font-weight: 400; font-size: .78rem; color: var(--muted); }
+.bar-track { position: relative; height: 26px; background: var(--brand-50); border-radius: 0 4px 4px 0; }
+.bar-fill { display: block; height: 100%; min-width: 2px; background: var(--brand-600); border-radius: 0 4px 4px 0; transition: width .4s ease; }
+.bar-row:hover .bar-fill { background: var(--brand); }
+.bar-goal { position: absolute; top: -4px; bottom: -4px; border-left: 2px dashed var(--accent); }
+.bar-value { font-weight: 700; font-size: .92rem; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+.bar-note { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; }
+.bar-goal-key { display: inline-block; width: 0; height: 14px; border-left: 2px dashed var(--accent); flex-shrink: 0; }
+@media (max-width: 560px) {
+  .bar-row { grid-template-columns: 1fr 44px; gap: 6px 10px; }
+  .bar-label { grid-column: 1 / -1; }
+}
+
 /* ---------- Impresión (certificado) ---------- */
 @media print {
   @page { size: A4 landscape; margin: 0; }
