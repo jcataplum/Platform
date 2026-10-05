@@ -21,16 +21,6 @@
   const PASS_PERCENT = 90;
   const MIN_PASSWORD_LENGTH = 8; // igual a "Minimum password length" de Supabase Auth
 
-  // El enlace de recuperación vuelve con `#access_token=…&type=recovery` (o `#error=…` si
-  // venció). supabase-js consume ese hash al iniciar, así que se lee antes de crear el cliente.
-  const urlParams = new URLSearchParams(global.location.hash.slice(1));
-  let recoveryPending = urlParams.get('type') === 'recovery';
-  const recoveryError = urlParams.get('error')
-    ? (urlParams.get('error_code') === 'otp_expired'
-      ? 'El enlace para restablecer la contraseña venció o ya fue usado. Solicita uno nuevo.'
-      : (urlParams.get('error_description') || 'No se pudo validar el enlace.').replace(/\+/g, ' '))
-    : null;
-
   const client = global.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
     auth: { persistSession: true, autoRefreshToken: true }
   });
@@ -152,36 +142,28 @@
 
     logout() {
       return ownAuthOp(async () => {
-        recoveryPending = false;
         cache = emptyCache();
         await client.auth.signOut();
       });
     },
 
-    /** Envía al correo un enlace para restablecer la contraseña que vuelve a esta página. */
-    async requestPasswordReset(email) {
-      const redirectTo = global.location.origin + global.location.pathname;
-      const { error } = await client.auth.resetPasswordForEmail(email.trim().toLowerCase(), { redirectTo });
-      if (error) {
-        if (error.status === 429) throw new Error('Se enviaron demasiados correos. Espera unos minutos e inténtalo de nuevo.');
-        throw new Error(error.message);
-      }
+    /** Deja una solicitud de cambio de contraseña para el administrador (no requiere sesión). */
+    requestPasswordReset(email) {
+      return rpc('request_password_reset', { p_email: email.trim().toLowerCase() });
     },
 
-    /** true si la sesión actual se abrió desde un enlace de recuperación y falta la nueva contraseña. */
-    recoveryPending() { return recoveryPending && !!cache.me; },
-
-    /** Error del enlace de recuperación (vencido, inválido), o null. */
-    recoveryError() { return recoveryError; },
+    /** true si el administrador asignó una contraseña temporal y falta crear la nueva. */
+    mustChangePassword() { return !!(cache.me && cache.me.mustChangePassword); },
 
     async updatePassword(password) {
       const { error } = await client.auth.updateUser({ password });
       if (error) {
-        if (error.code === 'same_password') throw new Error('La nueva contraseña debe ser distinta de la anterior.');
+        if (error.code === 'same_password') throw new Error('La nueva contraseña debe ser distinta de la temporal.');
         if (error.code === 'weak_password') throw new Error('La contraseña es demasiado débil.');
         throw new Error(error.message);
       }
-      recoveryPending = false;
+      await rpc('complete_password_change');
+      return refresh();
     }
   };
 
@@ -251,6 +233,11 @@
     /** Crea (sin id) o actualiza (con id) una cuenta. password vacío = no cambiar. */
     async saveUser({ id, name, email, role, password }) {
       await invokeAdminUsers({ action: id ? 'update' : 'create', id, name, email, role, password });
+      await refresh();
+    },
+
+    async dismissResetRequest(userId) {
+      await rpc('admin_dismiss_reset_request', { p_user_id: userId });
       await refresh();
     },
 

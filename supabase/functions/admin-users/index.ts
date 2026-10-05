@@ -2,7 +2,7 @@
 // admin-users — gestión de cuentas desde el panel administrativo
 //
 // POST { action: 'create', name, email, password, role }
-// POST { action: 'update', id, name, email, role, password? }
+// POST { action: 'update', id, name, email, role, password? }  (password de otra persona = temporal)
 // POST { action: 'delete', id }
 //
 // Crear/editar/eliminar cuentas requiere la API admin de Auth (service
@@ -106,8 +106,12 @@ Deno.serve(async (req) => {
           const { error } = await db.auth.admin.updateUserById(id, changes);
           if (error) authError(error);
         }
-        // el correo del perfil se sincroniza por trigger; el nombre del certificado también
-        const { error: pErr } = await db.from('profiles').update({ name, role }).eq('id', id);
+        // el correo del perfil se sincroniza por trigger; el nombre del certificado también.
+        // Una contraseña asignada a otra persona es temporal: resuelve su solicitud de
+        // recuperación y la obliga a crear una nueva al entrar.
+        const profile: Record<string, unknown> = { name, role };
+        if (password && id !== caller.id) Object.assign(profile, { must_change_password: true, reset_requested_at: null });
+        const { error: pErr } = await db.from('profiles').update(profile).eq('id', id);
         if (pErr) throw pErr;
         return json({ id });
       }

@@ -203,8 +203,8 @@
     const hash = location.hash || '#/';
     const user = Auth.current();
 
-    // Sesión abierta desde el enlace de recuperación: primero hay que fijar la nueva contraseña.
-    if (Auth.recoveryPending() && hash !== '#/nueva-contrasena') return go('#/nueva-contrasena');
+    // Entró con una contraseña temporal del administrador: primero debe crear la suya.
+    if (Auth.mustChangePassword() && hash !== '#/nueva-contrasena') return go('#/nueva-contrasena');
     if (hash === '#/' || hash === '#') return go(user ? Auth.home(user) : '#/login');
 
     const route = routes.find(r => r.re.test(hash));
@@ -342,14 +342,12 @@
   let resetEmail = '';
 
   function viewForgotPassword() {
-    const linkError = Auth.recoveryError();
     $app.innerHTML = `
       <div class="auth-wrap">
         ${authHero()}
         <section class="card auth-card">
           <h2>Recuperar contraseña</h2>
-          <p class="muted">Escribe el correo de tu cuenta y te enviaremos un enlace para crear una nueva contraseña.</p>
-          ${linkError ? `<div class="alert alert-warning" role="alert">${UI.esc(linkError)}</div>` : ''}
+          <p class="muted">Escribe el correo de tu cuenta y envía la solicitud. El administrador te asignará una contraseña temporal y, al ingresar con ella, crearás una nueva.</p>
           <form class="form" id="forgotForm" novalidate>
             <div class="field">
               <label for="fEmail">Correo electrónico</label>
@@ -357,7 +355,7 @@
             </div>
             <p class="form-error" id="fErr" role="alert"></p>
             <div class="alert alert-success" id="fOk" role="status" hidden></div>
-            <button class="btn btn-primary btn-block" type="submit">Enviar enlace</button>
+            <button class="btn btn-primary btn-block" type="submit">Solicitar cambio de contraseña</button>
             <p class="small muted" style="text-align:center;margin:0"><a href="#/login">Volver a iniciar sesión</a></p>
           </form>
         </section>
@@ -378,10 +376,8 @@
       try {
         await Auth.requestPasswordReset(email);
         resetEmail = email;
-        const warn = $app.querySelector('.alert-warning');
-        if (warn) warn.remove();
         // Mismo mensaje exista o no la cuenta, para no revelar qué correos están registrados.
-        ok.textContent = `Si ${email} tiene una cuenta, recibirás un correo con el enlace para cambiar tu contraseña. Revisa también la carpeta de spam.`;
+        ok.textContent = `Solicitud enviada. Si ${email} tiene una cuenta, el administrador te comunicará una contraseña temporal para ingresar.`;
         ok.hidden = false;
       } catch (ex) {
         err.textContent = ex.message;
@@ -395,7 +391,7 @@
     $app.innerHTML = `
       <section class="card auth-card" style="max-width:480px;margin:40px auto">
         <h2>Nueva contraseña</h2>
-        <p class="muted">Crea una nueva contraseña para <strong>${UI.esc(user.email || user.name)}</strong>.</p>
+        <p class="muted">Ingresaste con una contraseña temporal. Crea una nueva para <strong>${UI.esc(user.email || user.name)}</strong> antes de continuar.</p>
         <form class="form" id="newPassForm" novalidate>
           <div class="field">
             <label for="nPass">Nueva contraseña</label>
@@ -421,9 +417,9 @@
       err.textContent = '';
       btn.disabled = true;
       try {
-        await Auth.updatePassword(f.password.value);
+        const updated = await Auth.updatePassword(f.password.value);
         UI.toast('Contraseña actualizada', 'success');
-        go(Auth.home(user));
+        go(Auth.home(updated || user));
       } catch (ex) {
         err.textContent = ex.message;
       } finally {
@@ -918,8 +914,19 @@
   ];
 
   function adminTabs(active) {
+    // Avisa en «Usuarios» si hay solicitudes de cambio de contraseña pendientes
+    const resets = Store.users().filter(u => u.resetRequestedAt).length;
     return `<nav class="tabs" aria-label="Secciones de administración">${ADMIN_TABS.map(([h, l]) =>
-      `<a href="${h}" class="${h === active ? 'active' : ''}">${l}</a>`).join('')}</nav>`;
+      `<a href="${h}" class="${h === active ? 'active' : ''}">${l}${h === '#/admin/usuarios' && resets
+        ? ` <span class="badge badge-warning" title="Solicitudes de cambio de contraseña">${resets}</span>` : ''}</a>`).join('')}</nav>`;
+  }
+
+  /** Contraseña temporal legible (sin caracteres que se confundan: 0/O, 1/l/I). */
+  function tempPassword() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    const rnd = new Uint32Array(10);
+    crypto.getRandomValues(rnd);
+    return Array.from(rnd, n => chars[n % chars.length]).join('');
   }
 
   function attemptGrade(a) {
@@ -1735,6 +1742,7 @@
     const students = users.filter(u => u.role === 'student').length;
     const atts = Store.attempts();
     const certs = Store.certificates();
+    const resets = users.filter(u => u.resetRequestedAt);
 
     $app.innerHTML = `
       <div class="page-head">
@@ -1748,12 +1756,18 @@
         </div>
       </div>
       ${adminTabs('#/admin/usuarios')}
+      ${resets.length ? `<div class="alert alert-warning" role="status">
+        <strong>${resets.length === 1 ? '1 persona pidió' : resets.length + ' personas pidieron'} cambiar su contraseña:</strong>
+        ${resets.map(u => UI.esc(u.name)).join(', ')}. Usa «Contraseña temporal» en su fila y comunícale la contraseña; al ingresar deberá crear una nueva.
+      </div>` : ''}
       <div class="table-wrap">
         <table class="table-responsive">
           <thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th>Intentos</th><th>Certificados</th><th>Registro</th><th>Acciones</th></tr></thead>
           <tbody>
             ${users.map(u => `<tr>
-              <td data-label="Nombre"><strong>${UI.esc(u.name)}</strong>${u.id === me.id ? ' <span class="badge badge-accent">Tú</span>' : ''}</td>
+              <td data-label="Nombre"><strong>${UI.esc(u.name)}</strong>${u.id === me.id ? ' <span class="badge badge-accent">Tú</span>' : ''}
+                ${u.resetRequestedAt ? `<br><span class="badge badge-warning" title="Solicitado el ${UI.esc(UI.fmtDateTime(u.resetRequestedAt))}">Pidió cambio de contraseña</span>` : ''}
+                ${u.mustChangePassword ? '<br><span class="badge badge-neutral">Contraseña temporal</span>' : ''}</td>
               <td data-label="Correo">${UI.esc(u.email)}</td>
               <td data-label="Rol">${u.role === 'admin' ? '<span class="badge badge-accent">Administrador</span>' : '<span class="badge badge-neutral">Estudiante</span>'}</td>
               <td data-label="Intentos">${atts.filter(a => a.userId === u.id).length}</td>
@@ -1761,6 +1775,7 @@
               <td data-label="Registro">${UI.fmtDate(u.createdAt)}</td>
               <td data-label="Acciones"><div class="btn-row">
                 <button class="btn btn-outline btn-sm" data-action="edit" data-id="${u.id}">Editar</button>
+                ${u.id !== me.id ? `<button class="btn ${u.resetRequestedAt ? 'btn-accent' : 'btn-outline'} btn-sm" data-action="tempPass" data-id="${u.id}">Contraseña temporal</button>` : ''}
                 ${u.role === 'student' ? `<button class="btn btn-outline btn-sm" data-action="recordAttempt" data-id="${u.id}">Registrar evaluación</button>` : ''}
                 ${atts.some(a => a.userId === u.id) ? `<button class="btn btn-outline btn-sm" data-action="resetAttempts" data-id="${u.id}">Reiniciar intentos</button>` : ''}
                 <button class="btn btn-danger btn-sm" data-action="delete" data-id="${u.id}" ${u.id === me.id ? 'disabled title="No puedes eliminar tu propia cuenta"' : ''}>Eliminar</button>
@@ -1825,6 +1840,44 @@
         if (v === 'save') { UI.toast(u ? 'Usuario actualizado' : 'Usuario creado', 'success'); render(); }
       });
     }
+
+    /** Asigna una contraseña temporal (atiende la solicitud de recuperación, si la hay). */
+    actions.tempPass = el => {
+      const u = users.find(x => x.id === el.dataset.id);
+      if (!u || u.id === me.id) return;
+      UI.modal({
+        title: 'Contraseña temporal',
+        body: `
+          <div class="form">
+            <p style="margin:0"><strong>${UI.esc(u.name)}</strong> · ${UI.esc(u.email)}</p>
+            ${u.resetRequestedAt ? `<div class="alert alert-warning" style="margin:0">Pidió cambiar su contraseña el ${UI.esc(UI.fmtDateTime(u.resetRequestedAt))}.</div>` : ''}
+            <div class="field"><label for="tPass">Contraseña temporal</label>
+              <input class="input" id="tPass" name="tpass" autocomplete="off" spellcheck="false" value="${UI.esc(tempPassword())}"></div>
+            <p class="small muted" style="margin:0">Comunícale esta contraseña por un medio seguro. Al ingresar con ella, la plataforma le pedirá crear una nueva.</p>
+            <p class="form-error" id="tErr" role="alert"></p>
+          </div>`,
+        // «Asignar» va primero entre los submit: es el que activa Enter
+        buttons: [{ label: 'Cancelar', value: 'cancel' }, { label: 'Asignar contraseña', value: 'save', cls: 'btn-primary' }]
+          .concat(u.resetRequestedAt ? [{ label: 'Descartar solicitud', value: 'dismiss', cls: 'btn-outline' }] : []),
+        async onSubmit(val, form) {
+          const err = form.querySelector('#tErr');
+          const pass = form.tpass.value.trim();
+          if (val === 'save' && pass.length < MIN_PASSWORD_LENGTH) { err.textContent = `La contraseña debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.`; return false; }
+          err.textContent = '';
+          try {
+            if (val === 'dismiss') await Api.dismissResetRequest(u.id);
+            else await Api.saveUser({ id: u.id, name: u.name, email: u.email, role: u.role, password: pass });
+          } catch (ex) {
+            err.textContent = ex.message;
+            return false;
+          }
+          return true;
+        }
+      }).then(v => {
+        if (v === 'save') { UI.toast('Contraseña temporal asignada', 'success'); render(); }
+        if (v === 'dismiss') { UI.toast('Solicitud descartada'); render(); }
+      });
+    };
 
     /** Reinicia (anula) los intentos de un usuario en un examen elegido. */
     actions.resetAttempts = el => {
@@ -2131,11 +2184,6 @@
           <button class="btn btn-primary" type="button" onclick="location.reload()">Reintentar</button>
         </section>`;
       return;
-    }
-
-    // Quita del hash los tokens o el error del enlace de recuperación (no son rutas)
-    if (/(^#|&)(access_token|error)=/.test(location.hash)) {
-      history.replaceState(null, '', location.pathname + location.search + (Auth.recoveryError() ? '#/recuperar' : '#/'));
     }
 
     window.addEventListener('hashchange', render);
