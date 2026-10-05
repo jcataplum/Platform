@@ -173,6 +173,8 @@
   const routes = [
     { re: /^#\/login$/, view: viewLogin, access: 'guest' },
     { re: /^#\/registro$/, view: viewRegister, access: 'guest' },
+    { re: /^#\/recuperar$/, view: viewForgotPassword, access: 'guest' },
+    { re: /^#\/nueva-contrasena$/, view: viewNewPassword, access: 'user' },
     { re: /^#\/panel$/, view: viewStudentHome, access: 'student' },
     { re: /^#\/resultados$/, view: viewStudentResults, access: 'student' },
     { re: /^#\/certificados$/, view: viewStudentCerts, access: 'student' },
@@ -201,6 +203,8 @@
     const hash = location.hash || '#/';
     const user = Auth.current();
 
+    // Sesión abierta desde el enlace de recuperación: primero hay que fijar la nueva contraseña.
+    if (Auth.recoveryPending() && hash !== '#/nueva-contrasena') return go('#/nueva-contrasena');
     if (hash === '#/' || hash === '#') return go(user ? Auth.home(user) : '#/login');
 
     const route = routes.find(r => r.re.test(hash));
@@ -299,6 +303,7 @@
             <div class="field">
               <label for="lPass">Contraseña</label>
               <input class="input" id="lPass" name="password" type="password" autocomplete="current-password" required>
+              <a class="small" href="#/recuperar" id="forgotLink" style="justify-self:end">¿Olvidaste tu contraseña?</a>
             </div>
             <p class="form-error" id="lErr" role="alert"></p>
             <button class="btn btn-primary btn-block" type="submit">Ingresar</button>
@@ -306,6 +311,11 @@
           </form>
         </section>
       </div>`;
+
+    // Lleva el correo escrito al formulario de recuperación
+    document.getElementById('forgotLink').addEventListener('click', () => {
+      resetEmail = document.getElementById('lEmail').value.trim();
+    });
 
     document.getElementById('loginForm').addEventListener('submit', async e => {
       e.preventDefault();
@@ -320,6 +330,99 @@
         const user = await Auth.login(f.email.value, f.password.value);
         if (!user) { err.textContent = 'Correo o contraseña incorrectos.'; return; }
         UI.toast('¡Bienvenido(a), ' + user.name.split(' ')[0] + '!', 'success');
+        go(Auth.home(user));
+      } catch (ex) {
+        err.textContent = ex.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
+  let resetEmail = '';
+
+  function viewForgotPassword() {
+    const linkError = Auth.recoveryError();
+    $app.innerHTML = `
+      <div class="auth-wrap">
+        ${authHero()}
+        <section class="card auth-card">
+          <h2>Recuperar contraseña</h2>
+          <p class="muted">Escribe el correo de tu cuenta y te enviaremos un enlace para crear una nueva contraseña.</p>
+          ${linkError ? `<div class="alert alert-warning" role="alert">${UI.esc(linkError)}</div>` : ''}
+          <form class="form" id="forgotForm" novalidate>
+            <div class="field">
+              <label for="fEmail">Correo electrónico</label>
+              <input class="input" id="fEmail" name="email" type="email" autocomplete="email" required value="${UI.esc(resetEmail)}">
+            </div>
+            <p class="form-error" id="fErr" role="alert"></p>
+            <div class="alert alert-success" id="fOk" role="status" hidden></div>
+            <button class="btn btn-primary btn-block" type="submit">Enviar enlace</button>
+            <p class="small muted" style="text-align:center;margin:0"><a href="#/login">Volver a iniciar sesión</a></p>
+          </form>
+        </section>
+      </div>`;
+
+    document.getElementById('forgotForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = e.target;
+      const err = document.getElementById('fErr');
+      const ok = document.getElementById('fOk');
+      const btn = f.querySelector('button[type=submit]');
+      if (btn.disabled) return;
+      const email = f.email.value.trim();
+      if (!UI.emailOk(email)) { err.textContent = 'Ingresa un correo válido.'; return; }
+      err.textContent = '';
+      ok.hidden = true;
+      btn.disabled = true;
+      try {
+        await Auth.requestPasswordReset(email);
+        resetEmail = email;
+        const warn = $app.querySelector('.alert-warning');
+        if (warn) warn.remove();
+        // Mismo mensaje exista o no la cuenta, para no revelar qué correos están registrados.
+        ok.textContent = `Si ${email} tiene una cuenta, recibirás un correo con el enlace para cambiar tu contraseña. Revisa también la carpeta de spam.`;
+        ok.hidden = false;
+      } catch (ex) {
+        err.textContent = ex.message;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
+  function viewNewPassword(user) {
+    $app.innerHTML = `
+      <section class="card auth-card" style="max-width:480px;margin:40px auto">
+        <h2>Nueva contraseña</h2>
+        <p class="muted">Crea una nueva contraseña para <strong>${UI.esc(user.email || user.name)}</strong>.</p>
+        <form class="form" id="newPassForm" novalidate>
+          <div class="field">
+            <label for="nPass">Nueva contraseña</label>
+            <input class="input" id="nPass" name="password" type="password" autocomplete="new-password" minlength="${MIN_PASSWORD_LENGTH}" required>
+          </div>
+          <div class="field">
+            <label for="nPass2">Confirmar contraseña</label>
+            <input class="input" id="nPass2" name="password2" type="password" autocomplete="new-password" required>
+          </div>
+          <p class="form-error" id="nErr" role="alert"></p>
+          <button class="btn btn-primary btn-block" type="submit">Guardar contraseña</button>
+        </form>
+      </section>`;
+
+    document.getElementById('newPassForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = e.target;
+      const err = document.getElementById('nErr');
+      const btn = f.querySelector('button[type=submit]');
+      if (btn.disabled) return;
+      if (f.password.value.length < MIN_PASSWORD_LENGTH) { err.textContent = `La contraseña debe tener al menos ${MIN_PASSWORD_LENGTH} caracteres.`; return; }
+      if (f.password.value !== f.password2.value) { err.textContent = 'Las contraseñas no coinciden.'; return; }
+      err.textContent = '';
+      btn.disabled = true;
+      try {
+        await Auth.updatePassword(f.password.value);
+        UI.toast('Contraseña actualizada', 'success');
         go(Auth.home(user));
       } catch (ex) {
         err.textContent = ex.message;
@@ -2028,6 +2131,11 @@
           <button class="btn btn-primary" type="button" onclick="location.reload()">Reintentar</button>
         </section>`;
       return;
+    }
+
+    // Quita del hash los tokens o el error del enlace de recuperación (no son rutas)
+    if (/(^#|&)(access_token|error)=/.test(location.hash)) {
+      history.replaceState(null, '', location.pathname + location.search + (Auth.recoveryError() ? '#/recuperar' : '#/'));
     }
 
     window.addEventListener('hashchange', render);
