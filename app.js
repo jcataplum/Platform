@@ -175,10 +175,11 @@
     { re: /^#\/registro$/, view: viewRegister, access: 'guest' },
     { re: /^#\/recuperar$/, view: viewForgotPassword, access: 'guest' },
     { re: /^#\/nueva-contrasena$/, view: viewNewPassword, access: 'user' },
-    { re: /^#\/panel$/, view: viewStudentHome, access: 'student' },
-    { re: /^#\/resultados$/, view: viewStudentResults, access: 'student' },
-    { re: /^#\/certificados$/, view: viewStudentCerts, access: 'student' },
-    { re: /^#\/intento\/([\w-]+)$/, view: viewAttempt, access: 'student' },
+    // Presentar exámenes: estudiantes y también administradores
+    { re: /^#\/panel$/, view: viewStudentHome, access: 'user' },
+    { re: /^#\/resultados$/, view: viewStudentResults, access: 'user' },
+    { re: /^#\/certificados$/, view: viewStudentCerts, access: 'user' },
+    { re: /^#\/intento\/([\w-]+)$/, view: viewAttempt, access: 'user' },
     { re: /^#\/resultado\/([\w-]+)$/, view: viewResult, access: 'user' },
     { re: /^#\/certificado\/([\w-]+)(\/imprimir)?$/, view: viewCertificate, access: 'user' },
     { re: /^#\/admin$/, view: viewAdminDashboard, access: 'admin' },
@@ -213,7 +214,6 @@
     if (route.access === 'guest' && user) return go(Auth.home(user));
     if (route.access !== 'guest' && !user) return go('#/login');
     if (route.access === 'admin' && user.role !== 'admin') return go(Auth.home(user));
-    if (route.access === 'student' && user.role !== 'student') return go(Auth.home(user));
 
     renderNav(user, hash);
     const params = hash.match(route.re).slice(1);
@@ -237,11 +237,12 @@
     if (!user) {
       links = [['#/login', 'Iniciar sesión'], ['#/registro', 'Registrarse']];
     } else if (user.role === 'admin') {
-      links = ADMIN_TABS;
+      links = ADMIN_TABS.concat([['#/panel', 'Mis exámenes']]);
     } else {
       links = [['#/panel', 'Mis exámenes'], ['#/resultados', 'Resultados'], ['#/certificados', 'Certificados']];
     }
     const isActive = h => hash === h || (h === '#/admin/examenes' && hash.startsWith('#/admin/examen/')) ||
+      (h === '#/panel' && user && user.role === 'admin' && /^#\/(resultados|certificados|intento\/)/.test(hash)) ||
       (h === '#/admin/usuarios' && /^#\/admin\/(intento|registrar)\//.test(hash)) ||
       (h === '#/admin/resultados' && /^#\/(admin\/(resultados|certificados)\/|resultado\/|certificado\/)/.test(hash));
     $nav.innerHTML = links.map(([h, l]) =>
@@ -608,7 +609,7 @@
     $app.innerHTML = `
       <div class="page-head">
         <div>
-          <p class="eyebrow">Panel del estudiante</p>
+          <p class="eyebrow">${user.role === 'admin' ? 'Mis exámenes' : 'Panel del estudiante'}</p>
           <h1>Hola, ${UI.esc(user.name.split(' ')[0])}</h1>
           <p class="muted">Selecciona un examen para comenzar o continuar.</p>
         </div>
@@ -797,14 +798,15 @@
     const used = Domain.attemptsFor(att.userId, att.examId).length;
     const reveal = user.role === 'admin' || used >= MAX_ATTEMPTS || !!cert;
     const passed = att.percentage >= PASS_PERCENT;
-    const back = user.role === 'admin' ? '#/admin/resultados/' + att.userId : '#/resultados';
+    const mine = att.userId === user.id; // un administrador también puede presentar exámenes
+    const back = mine ? '#/resultados' : '#/admin/resultados/' + att.userId;
 
     $app.innerHTML = `
       <div class="page-head">
         <div>
           <p class="eyebrow">Resultado · Intento ${att.number} de ${MAX_ATTEMPTS}</p>
           <h1>${UI.esc(att.examTitle)}</h1>
-          ${user.role === 'admin' ? `<p class="muted">Estudiante: ${UI.esc(owner ? owner.name : 'Usuario eliminado')}</p>` : ''}
+          ${!mine ? `<p class="muted">Estudiante: ${UI.esc(owner ? owner.name : 'Usuario eliminado')}</p>` : ''}
           ${att.manual ? '<p class="small muted">Registrado por un administrador (evaluación presentada por otro medio).</p>'
             : att.editedAt ? `<p class="small muted">Respuestas editadas por un administrador el ${UI.fmtDateTime(att.editedAt)}.</p>` : ''}
         </div>
@@ -822,7 +824,7 @@
           ${passed
             ? `<div class="alert alert-success"><strong>¡Aprobado con certificación!</strong> Superaste el ${PASS_PERCENT}% requerido.</div>`
             : `<div class="alert alert-warning">Necesitas ${PASS_PERCENT}% o más para certificarte.
-               ${user.role !== 'admin' ? (used < MAX_ATTEMPTS ? `Te quedan ${MAX_ATTEMPTS - used} intento(s).` : 'Ya no tienes intentos disponibles.') : ''}</div>`}
+               ${mine ? (used < MAX_ATTEMPTS ? `Te quedan ${MAX_ATTEMPTS - used} intento(s).` : 'Ya no tienes intentos disponibles.') : ''}</div>`}
           <div class="stats-row">
             <div class="stat"><b style="color:var(--success)">${att.correctCount}</b><span>Correctas</span></div>
             <div class="stat"><b style="color:var(--danger)">${att.total - att.correctCount}</b><span>Incorrectas</span></div>
@@ -831,7 +833,7 @@
           </div>
           <div class="btn-row" style="margin-top:16px">
             ${cert ? `<a class="btn btn-accent" href="#/certificado/${cert.id}">Ver certificado</a>` : ''}
-            ${user.role !== 'admin' ? '<a class="btn btn-outline" href="#/panel">Ir a mis exámenes</a>' : ''}
+            ${mine ? '<a class="btn btn-outline" href="#/panel">Ir a mis exámenes</a>' : ''}
           </div>
         </div>
       </section>
@@ -874,7 +876,7 @@
     const c = Store.certificates().find(x => x.id === certId);
     if (!c || (user.role !== 'admin' && c.userId !== user.id)) return renderNotFound(user);
     const owner = Store.users().find(u => u.id === c.userId);
-    const back = user.role === 'admin' ? '#/admin/certificados/' + c.userId : '#/certificados';
+    const back = c.userId === user.id ? '#/certificados' : '#/admin/certificados/' + c.userId;
 
     $app.innerHTML = `
       <div class="cert-actions">
